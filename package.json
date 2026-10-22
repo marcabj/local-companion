@@ -1,0 +1,40 @@
+{
+  "name": "local-companion",
+  "version": "0.1.0",
+  "description": "A floating macOS screen and audio assistant with Codex answers and local Parakeet transcription",
+  "main": "src/main.cjs",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "start": "electron .",
+    "build": "node scripts/build.cjs",
+    "test": "node --test tests/*.test.cjs",
+    "test:native": "node scripts/test-native.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.0.0",
+    "linkedom": "^0.18.14"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marcabj/local-companion.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marcabj/local-companion/issues"
+  },
+  "homepage": "https://github.com/marcabj/local-companion#readme",
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

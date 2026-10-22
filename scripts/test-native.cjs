@@ -1,0 +1,13 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+process.chdir(path.resolve(__dirname, '..'));
+fs.mkdirSync('.build', { recursive: true });
+const capture = fs.readFileSync('native/Capture.swift', 'utf8');
+const start = capture.indexOf('@main struct Entry {');
+const end = capture.indexOf('\nstruct AudioDevice {', start);
+if (start < 0 || end < 0) throw new Error('Cannot isolate native capture library');
+const fixture = capture.slice(0, start) + capture.slice(end) + '\n' + fs.readFileSync('tests/pcm.swift', 'utf8');
+fs.writeFileSync('.build/PCMTests.swift', fixture);
+execFileSync('xcrun', ['swiftc', '-parse-as-library', '-swift-version', '5', '-O', '-module-cache-path', '.build/module-cache', '-framework', 'AppKit', '-framework', 'AVFoundation', '-framework', 'CoreAudio', '.build/PCMTests.swift', '-o', '.build/PCMTests'], { stdio: 'inherit' });
+execFileSync('.build/PCMTests', [], { stdio: 'inherit' });
