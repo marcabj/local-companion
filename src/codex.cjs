@@ -55,7 +55,7 @@ function findCodex() {
 const { BASE_INSTRUCTIONS } = require('./prompts.cjs');
 
 class CodexClient extends EventEmitter {
-  constructor(cwd) { super(); this.cwd = cwd; this.thread = null; this.turn = null; this.busy = false; }
+  constructor(cwd) { super(); this.instructionProfiles=new Map(); this.cwd = cwd; this.thread = null; this.turn = null; this.busy = false; }
   async connect() {
     this.disconnect();
     const rpc = this.rpc = new RpcProcess(findCodex(), ['app-server', '--listen', 'stdio://'], { cwd: this.cwd });
@@ -74,7 +74,7 @@ class CodexClient extends EventEmitter {
       }
     });
     rpc.on('disconnected', e => { this.busy = false; this.turn = null; this.thread = null; this.emit('disconnected', e.message); });
-    await rpc.request('initialize', { clientInfo: { name: 'local_companion', title: 'Local Companion', version: '0.1.0' } });
+    await rpc.request('initialize', { clientInfo: { name: 'marc_local_companion', title: 'Local Companion', version: '0.1.0' } });
     rpc.send({ method: 'initialized', params: {} });
     const account = await rpc.request('account/read', { refreshToken: false });
     if (!account.account && account.requiresOpenaiAuth) throw new Error('Sign in first: run codex login in Terminal, then reconnect.');
@@ -85,22 +85,31 @@ class CodexClient extends EventEmitter {
     const models = await rpc.request('model/list', {});
     return { models: models.data, auth: account.account?.type || 'configured provider' };
   }
-  async ask({ threadId, text, image, model, effort = 'low', serviceTier = 'default', smart = false, instructions = BASE_INSTRUCTIONS }) {
+  async ask({ threadId, text, image, images = [], model, effort = 'low', serviceTier = 'default', smart = false, instructions = BASE_INSTRUCTIONS }) {
     if (this.busy) throw new Error('Wait for the current answer or stop it first.');
     if (!this.rpc || this.rpc.closed) throw new Error('Connect to Codex first.');
     this.busy = true; this.turnStarted = false; this.cancelRequested = false;
     try {
       const profile = JSON.stringify({smart,instructions});
       if (threadId !== this.thread || !this.thread || profile !== this.profile) {
-        const params = { model, serviceTier, cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: instructions, config: { ...this.threadConfig, web_search: smart ? 'live' : 'disabled' } };
+        const params = { model, serviceTier, cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: 'You are Local Companion. Follow the current conversation configuration supplied in developer instructions. Respond in the chat.', developerInstructions: instructions, config: { ...this.threadConfig, web_search: smart ? 'live' : 'disabled' } };
         const response = threadId
           ? await this.rpc.request('thread/resume', { ...params, threadId })
           : await this.rpc.request('thread/start', params);
         this.thread = response.thread.id; this.profile = profile;
         this.emit('thread', this.thread);
+        if(!threadId) this.instructionProfiles.set(this.thread,instructions);
       }
-      const input = [{ type: 'text', text }];
-      if (image) input.push({ type: 'localImage', path: image });
+      // Resuming an already-loaded thread does not reliably replace its instructions.
+      // Append configuration only when it changes (or after restoring an unknown thread).
+      if(this.instructionProfiles.get(this.thread)!==instructions) {
+        await this.rpc.request('thread/inject_items',{threadId:this.thread,items:[{type:'message',role:'developer',content:[{type:'input_text',text:`Current conversation configuration:\n${instructions}`}]}]});
+        this.instructionProfiles.set(this.thread,instructions);
+      }
+      const input = [];
+      if (text?.trim()) input.push({type:'text',text});
+      for(const file of [...images, ...(image?[image]:[])]) input.push({type:'localImage',path:file});
+      if(!input.length) throw new Error('Add a message, speech or an image before sending.');
       const response = await this.rpc.request('turn/start', { threadId: this.thread, input, model, effort, serviceTier }, 60000);
       // A very short turn may complete before its start response is delivered.
       if (this.busy) this.turn = response.turn.id;

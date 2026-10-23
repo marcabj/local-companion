@@ -7,8 +7,9 @@ const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
 const { CodexClient } = require('./codex.cjs');
 const { AudioPipeline } = require('./audio.cjs');
-const { BASE_INSTRUCTIONS, ACTIONS, defaultModes, upgradeModes, buildRequest } = require('./prompts.cjs');
+const { BASE_INSTRUCTIONS, LEGACY_BASE_INSTRUCTIONS, ACTIONS, defaultModes, upgradeModes, buildRequest } = require('./prompts.cjs');
 const { WindowPrivacy } = require('./privacy.cjs');
+const { InputDiagnostics } = require('./input-diagnostics.cjs');
 const runFile = promisify(execFile);
 
 // Keep shortcut positions stable across keyboard layouts (quote = CSA è, backslash = CSA à).
@@ -19,25 +20,26 @@ const root = path.join(__dirname, '..');
 const project = app.isPackaged ? require('../runtime.json').project : root;
 const dataDir = process.env.COMPANION_DATA_DIR || app.getPath('userData');
 const captureBinary = app.isPackaged ? path.join(process.resourcesPath, 'CompanionCapture') : path.join(root, '.build/CompanionCapture');
-let win, codex, audio, connecting, activeId, audioSessionId, privacy, tray;
+let win, codex, audio, connecting, activeId, audioSessionId, privacy, tray, inputDiagnostics;
 let sessions = [];
 let models = [];
 let status = 'Connecting to Codex…';
 let connected = false, busy = false, audioBusy = false, listening = false;
 let selectedServiceTier = 'default';
-let selectedModel = '', selectedEffort = 'low', attachment = null, problem = '';
+let selectedModel = '', selectedEffort = 'low', capturing = false, problem = '';
 let microphone = '', audioPid = '';
 let audioStatus = 'Local Parakeet';
 let saveTimer, renderTimer;
 let compact = true, quitting = false, requesting = false, captureStartedAt = null;
 const DEFAULT_SHORTCUTS = {focus:'Control+Alt+P',assist:'Control+Alt+Return', visibility:'Control+Alt+Space', listen:'Control+Alt+L', screenshot:"Control+Alt+'",screenTranscript:'Control+Alt+\\', new:'Control+Alt+N', moveUp:'Command+Up',moveDown:'Command+Down',moveLeft:'Command+Left',moveRight:'Command+Right',scrollUp:'Control+Alt+Shift+Up',scrollDown:'Control+Alt+Shift+Down'};
-let preferences = {screenUse:true,smart:false,language:'Auto',autoNotes:true,contentProtection:false,noFocusWhenPrivate:false,baseInstructions:BASE_INSTRUCTIONS,shortcuts:{...DEFAULT_SHORTCUTS}};
+let preferences = {conversationVersion:2,screenUse:false,smart:false,language:'Auto',autoNotes:true,contentProtection:false,noFocusWhenPrivate:false,baseInstructions:BASE_INSTRUCTIONS,shortcuts:{...DEFAULT_SHORTCUTS}};
 let modes = defaultModes(), modeId = 'general';
 const currentMode = () => modes.find(m=>m.id===modeId) || modes[0];
 const active = () => sessions.find(s => s.id === activeId);
-function newSession() { const s = { id: randomUUID(), title: 'New conversation', createdAt: Date.now(), messages: [], transcript: [], threadId: null, modeId, notes:'', listenedMs:0 }; sessions.unshift(s); activeId = s.id; return s; }
+const isFreshChat = () => { const s=active();return s && !s.messages.length && !s.transcript.length && !s.threadId && !s.notes; };
+function newSession() { const s = { id: randomUUID(), title: 'New conversation', createdAt: Date.now(), messages: [], transcript: [], threadId: null, conversationVersion:2, attachments:[], sentTranscriptKeys:[], modeId, notes:'', listenedMs:0 }; sessions.unshift(s); activeId = s.id; return s; }
 function snapshot() {
-  return { privacyStatus:privacy?.state(), preferences, modes, modeId, requesting, captureStartedAt, permissions:{microphone:systemPreferences.getMediaAccessStatus('microphone'),screen:systemPreferences.getMediaAccessStatus('screen')}, compact, status, connected, busy, audioBusy, listening, audioStatus, pendingAudio: audio?.pending.size || 0, problem, selectedModel, selectedEffort, selectedServiceTier, models, microphone, audioPid, attachment: attachment && { preview: attachment.preview, name: attachment.name }, session: active(), sessions: sessions.map(({ id, title, createdAt, notes, transcript, messages }) => ({ id, title, createdAt, hasNotes:!!notes, searchText:[title,notes,...transcript.map(t=>t.text),...messages.map(m=>m.text)].join(' ').toLowerCase() })) };
+  return { privacyStatus:privacy?.state(), preferences, modes, modeId, requesting, capturing, captureStartedAt, permissions:{microphone:systemPreferences.getMediaAccessStatus('microphone'),screen:systemPreferences.getMediaAccessStatus('screen')}, compact, status, connected, busy, audioBusy, listening, audioStatus, pendingAudio: audio?.pending.size || 0, problem, selectedModel, selectedEffort, selectedServiceTier, models, microphone, audioPid, attachments: (active()?.attachments || []).map(({id,preview,name})=>({id,preview,name})), session: active(), sessions: sessions.map(({ id, title, createdAt, notes, transcript, messages }) => ({ id, title, createdAt, hasNotes:!!notes, searchText:[title,notes,...transcript.map(t=>t.text),...messages.map(m=>m.text)].join(' ').toLowerCase() })) };
 }
 function update() {
   if (renderTimer) return;
@@ -69,7 +71,7 @@ function updateTray() {
     {type:'separator'},{role:'quit'},
   ]));
 }
-function setCompact(value) { compact = value; win.setSize(690, value ? 104 + (attachment ? 46 : 0) + (problem ? 72 : 0) : 500, true); update(); }
+function setCompact(value) { compact = value; win.setSize(690, value ? 104 + (active()?.attachments?.length ? 66 : 0) + (problem ? 72 : 0) : 500, true); update(); }
 async function connect() {
   if (connecting) return connecting;
   if (busy) throw new Error('Stop the current answer before reconnecting.');
@@ -88,61 +90,65 @@ async function connect() {
   return connecting;
 }
 async function captureScreen(forRequest = false) {
-  if (busy && !forRequest) throw new Error('Wait for the answer before attaching a screen.');
-  const display = screen.getDisplayMatching(win.getBounds());
-  const scale = Math.min(1, 1920 / Math.max(display.size.width, display.size.height));
-  const visible = win.isVisible(), focused=win.isFocused();
-  win.hide();
+  if (capturing || (requesting && !forRequest)) throw new Error('Wait for the current capture or send.');
+  capturing=true;update();
+  let visible=false, focused=false;
   try {
+    visible=win.isVisible(); focused=win.isFocused();
+    const display = screen.getDisplayMatching(win.getBounds());
+    const scale = Math.min(1, 1920 / Math.max(display.size.width, display.size.height));
+    win.hide();
     await new Promise(r => setTimeout(r, 180));
     const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: Math.round(display.size.width * scale), height: Math.round(display.size.height * scale) } });
     const source = sources.find(s => s.display_id === String(display.id)) || sources[0];
     if (!source || source.thumbnail.isEmpty()) throw new Error('Enable Local Companion under System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.');
     await setAttachment(source.thumbnail.toPNG(), 'Screen');
-  } finally { if (visible) showWindow({focus:focused}); }
+  } finally {capturing=false;update();if (visible) showWindow({focus:focused}); }
 }
 async function setAttachment(bytes, name) {
   const image = nativeImage.createFromBuffer(bytes);
   if (image.isEmpty()) throw new Error('Choose a PNG or JPEG image.');
   const target = path.join(dataDir, 'images', randomUUID() + '.png');
   await fs.writeFile(target, image.toPNG(), { mode: 0o600 });
-  attachment = { path: target, preview: image.resize({ width: 320 }).toDataURL(), name };
+  active().attachments ||= [];
+  active().attachments.push({id:randomUUID(),path:target,preview:image.resize({width:320}).toDataURL(),name});
+  save();
   if (compact) setCompact(true);
   update();
 }
 async function ask(input = {}) {
-  const request = typeof input === 'string' ? {text:input} : input || {};
-  const kind = request.kind || 'assist';
-  if (!Object.hasOwn(ACTIONS,kind)) throw new Error('Unknown answer action.');
-  if (!connected) throw new Error('Connect to Codex first.');
-  if (busy || requesting) throw new Error('Stop the current answer before asking again.');
-  requesting = true; problem = ''; update();
-  const s = active();
+  const request=typeof input==='string'?{text:input}:input || {};
+  const s=active(), retry=request.retry?s.lastPreparedRequest:null;
+  const kind=retry?.kind || request.kind || 'assist';
+  if(!Object.hasOwn(ACTIONS,kind)) throw new Error('Unknown answer action.');
+  if(!connected) throw new Error('Connect to Codex first.');
+  if(busy || requesting || capturing) throw new Error('Stop the current answer or wait for capture before sending.');
+  requesting=true;problem='';update();
   try {
-    if (audioBusy && kind !== 'screen') throw new Error('Audio is starting. Wait until Listening appears.');
-    // Flush incomplete utterances without ending the listening session.
-    if (kind !== 'screen' && (listening || audio.pending.size)) { status = 'Finishing the latest transcript…'; update(); await audio.flush(); }
-    const freshScreen = ['screen','screen-transcript'].includes(kind);
-    const shouldCapture = freshScreen || (preferences.screenUse && !['notes','email','latest'].includes(kind));
-    const model = models.find(m=>m.model===selectedModel);
-    if (['latest','screen-transcript'].includes(kind) && !s.transcript.some(t=>t.text?.trim())) throw new Error('No transcript yet. Start Listen and wait for speech before answering the latest question.');
-    if (((kind !== 'latest' && attachment) || shouldCapture) && model?.inputModalities && !model.inputModalities.includes('image')) throw new Error('Choose an image-capable model or turn Uses Screen off.');
-    if (shouldCapture && (!attachment || freshScreen)) { status='Capturing screen…'; update(); await captureScreen(true); }
-    const image=kind === 'latest' ? null : attachment;
-    if (!(request.text||'').trim() && !s.transcript.length && !image && !currentMode().context && !currentMode().files.length) throw new Error('Start Listen, enable Uses Screen, attach context, or type a question.');
-    const built=buildRequest({...request,kind,session:s,mode:currentMode(),preferences,hasImage:!!image});
-    busy=true; setCompact(false); showWindow();
-    win.webContents.send('navigate','chat');
-    s.modeId=modeId;
-    if (!s.messages.length && s.title==='New conversation') s.title=built.label==='Assist' ? (s.transcript.find(t=>t.source==='Computer')?.text || 'Screen assistance').slice(0,65) : built.label.slice(0,65);
-    if (kind !== 'latest') attachment=null;
-    s.messages.push({role:'user',text:built.label,image:image?.preview||null,context:built.context,prompt:built.prompt});
-    const answer={role:'assistant',text:'',state:'working',kind}; s.messages.push(answer); s.currentAnswer=s.messages.length-1;
-    s.lastRequest={...request,kind};
-    update();save();
-    try { await codex.ask({threadId:freshScreen ? undefined : kind === 'latest' ? s.transcriptThreadId : s.threadId,text:built.prompt,image:image?.path,model:selectedModel,serviceTier:selectedServiceTier,effort:preferences.smart?smartEffort(model):selectedEffort,smart:preferences.smart,instructions:preferences.baseInstructions}); }
-    catch(e) {busy=false;answer.state='failed';answer.error=e.message;throw e;}
-  } finally { requesting=false;status=connected?'Codex connected':'Codex disconnected';update();save(); }
+    let prepared=retry;
+    if(!prepared) {
+      if(audioBusy) throw new Error('Audio is starting. Wait until Listening appears.');
+      if(listening || audio.pending.size) {status='Finishing the transcript…';update();await audio.flush();}
+      const takeScreen=['screen','screen-transcript'].includes(kind) || (kind==='assist' && preferences.screenUse && (request.text||'').trim() && !s.attachments?.length);
+      if(takeScreen) await captureScreen(true);
+      const images=kind==='latest' || ['notes','recap','email'].includes(kind)?[]:[...(s.attachments||[])];
+      const built=buildRequest({...request,kind,session:s,mode:currentMode(),preferences,hasImage:images.length>0});
+      if(!built.prompt.trim() && !images.length) throw new Error('Type a message, attach images or use Listen to add new speech.');
+      prepared={...built,kind,images};
+    }
+    const model=models.find(m=>m.model===selectedModel);
+    if(prepared.images.length && model?.inputModalities && !model.inputModalities.includes('image')) throw new Error('Choose an image-capable model.');
+    busy=true;setCompact(false);showWindow();win.webContents.send('navigate','chat');s.modeId=modeId;
+    if(!s.messages.length && s.title==='New conversation') s.title=prepared.label.slice(0,65);
+    s.messages.push({role:'user',text:prepared.label,images:prepared.images,context:prepared.context,prompt:prepared.prompt});
+    const answer={role:'assistant',text:'',state:'working',kind};s.messages.push(answer);s.currentAnswer=s.messages.length-1;
+    s.lastPreparedRequest=prepared;update();save();
+    try {
+      await codex.ask({threadId:s.threadId,text:prepared.prompt,images:prepared.images.map(i=>i.path),model:selectedModel,serviceTier:selectedServiceTier,effort:preferences.smart?smartEffort(model):selectedEffort,smart:preferences.smart,instructions:prepared.instructions});
+      const sent=new Set(prepared.images.map(i=>i.id));s.attachments=(s.attachments||[]).filter(i=>!sent.has(i.id));
+      s.sentTranscriptKeys=[...new Set([...(s.sentTranscriptKeys||[]),...prepared.transcriptKeys])];
+    } catch(e) {busy=false;answer.state='failed';answer.error=e.message;throw e;}
+  } finally {requesting=false;status=connected?'Codex connected':'Codex disconnected';update();save();}
 }
 function normalizeServiceTier(model,tier) {return model?.serviceTiers?.some(t=>t.id===tier)?tier:'default';}
 function smartEffort(model) { const available=model?.supportedReasoningEfforts?.map(e=>e.reasoningEffort)||[]; return available.includes('high')?'high':selectedEffort; }
@@ -168,7 +174,7 @@ function move(dx,dy) {const b=win.getBounds(),area=screen.getDisplayMatching(b).
 function bindEvents() {
   codex.on('diagnostic', text => { void fs.writeFile(path.join(dataDir, 'connection-diagnostic.log'), text, { mode: 0o600 }); });
   codex.on('cancelError', report);
-  codex.on('thread', id => { const s=active(); const key=s.messages[s.currentAnswer]?.kind==='latest'?'transcriptThreadId':'threadId'; s[key]=id; save(); });
+  codex.on('thread', id => { const s=active();s.threadId=id; save(); });
   codex.on('delta', text => { const s = active(); const a = s.messages[s.currentAnswer]; if (a) { a.text += text; update(); } });
   codex.on('message', item => { const s = active(); const a = s.messages[s.currentAnswer]; if (a && !a.text) a.text = item.text || ''; update(); });
   codex.on('completed', turn => {
@@ -191,10 +197,12 @@ function bindEvents() {
   audio.on('problem', value => { audioBusy = false; report(value); });
   audio.on('transcript', item => {
     const s = sessions.find(s => s.id === item.sessionId);
-    if (s) { s.transcript.push({ source: item.source, text: item.text, at: item.at, seconds: item.seconds }); s.transcript.sort((a, b) => a.at - b.at); save(); update(); }
+    if (s) { s.transcript.push({ id:randomUUID(), source: item.source, text: item.text, at: item.at, seconds: item.seconds }); s.transcript.sort((a, b) => a.at - b.at); save(); update(); }
   });
 }
 async function action(name, payload) {
+  if(['toggle-privacy','type-question','open-settings','more','choose-model','choose-mode','compact','screen','new','listen','preferences'].includes(name))
+    inputDiagnostics?.record('action',{action:name});
   switch (name) {
     case 'view': if(!compact)win.setSize(690,['modes','history','settings'].includes(payload)?760:500,true);break;
     case 'compact': setCompact(Boolean(payload)); break;
@@ -208,12 +216,12 @@ async function action(name, payload) {
       const navigate=view=>win.webContents.send('navigate',view);
       Menu.buildFromTemplate([
         ...(preferences.contentProtection && preferences.noFocusWhenPrivate?[{label:'Type a question…',click:()=>action('type-question').catch(e=>report(e.message))},{type:'separator'}]:[]),
-        {label:'Screen + transcript',enabled:connected && !busy && !requesting && !audioBusy,click:()=>win.webContents.send('command','screen-transcript')},
+        {label:'Quick Assist · screen + voice',enabled:connected && !busy && !requesting && !audioBusy,click:()=>win.webContents.send('command','screen-transcript')},
         {label:'Transcript',click:()=>navigate('transcript')},
         {label:'History',click:()=>navigate('history')},
         {label:'Notes',click:()=>navigate('notes')},
         {type:'separator'},
-        {label:'New interview',enabled:!busy && !requesting && !audioBusy,click:()=>void action('new').catch(e=>report(e.message))},
+        {label:'New chat',enabled:!busy && !requesting && !audioBusy,click:()=>void action('new').catch(e=>report(e.message))},
         {label:'Settings',click:()=>action('open-settings').catch(e=>report(e.message))},
       ]).popup({window:win});break;
     }
@@ -248,7 +256,7 @@ async function action(name, payload) {
       selectedEffort=model.supportedReasoningEfforts?.some(e=>e.reasoningEffort===effort)?effort:model.defaultReasoningEffort || 'low';
       save();update();break;
     }
-    case 'retry': await ask(active().lastRequest || {}); break;
+    case 'retry': if(!active().lastPreparedRequest) throw new Error('Send a new message to continue this saved conversation.'); await ask({retry:true}); break;
     case 'end-session': {
       if(busy || requesting || audioBusy) throw new Error('Wait for the current operation before ending the session.');
       await audio.stop(); await audio.drain(); active().endedAt=Date.now(); save();
@@ -303,18 +311,30 @@ async function action(name, payload) {
     case 'microphone-permission': await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');break;
     case 'stop': await codex.interrupt(); break;
     case 'screen': await captureScreen(); break;
-    case 'remove-image': if (attachment) await fs.rm(attachment.path, { force: true }); attachment = null; if (compact) setCompact(true); update(); break;
+    case 'remove-image': {
+      if(requesting || capturing) throw new Error('Wait for the current capture or send.');
+      const queue=active().attachments || [];const image=queue.find(i=>i.id===payload);
+      active().attachments=queue.filter(i=>i!==image);
+      if(image && !sessions.some(s=>s.messages.some(m=>m.images?.some(i=>i.path===image.path)))) await fs.rm(image.path,{force:true});
+      if(compact)setCompact(true);save();update();break;
+    }
     case 'image': {
-      const result = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] });
-      if (!result.canceled) await setAttachment(await fs.readFile(result.filePaths[0]), path.basename(result.filePaths[0]));
+      if(capturing || requesting) throw new Error('Wait for the current capture or send.');
+      capturing=true;update();
+      try {
+        const result=await dialog.showOpenDialog(win,{properties:['openFile','multiSelections'],filters:[{name:'Images',extensions:['png','jpg','jpeg']}]});
+        if(!result.canceled) for(const file of result.filePaths) await setAttachment(await fs.readFile(file),path.basename(file));
+      } finally {capturing=false;update();}
       break;
     }
     case 'new':
     case 'session': {
-      if (busy || requesting || audioBusy || audio.pending.size) throw new Error('Wait for the current answer or pending transcription before switching sessions.');
+      if(name==='new' && isFreshChat()) return;
+      if (busy || requesting || capturing || audioBusy || audio.pending.size) throw new Error('Wait for the current answer or pending transcription before switching sessions.');
       await audio.stop();
+      if(name==='new' && isFreshChat()) return;
       if (name === 'new') newSession(); else if (sessions.some(s => s.id === payload)) {activeId = payload;modeId=active().modeId || modeId;}
-      attachment = null; problem = ''; setCompact(name === 'new'); win.webContents.send('navigate',name==='new'?'new':'chat'); save(); update(); break;
+      problem = ''; setCompact(name === 'new'); win.webContents.send('navigate',name==='new'?'new':'chat'); save(); update(); break;
     }
     case 'listen':
       if (audioBusy || requesting) break;
@@ -373,11 +393,20 @@ else {
     await fs.mkdir(path.join(dataDir, 'workspace'), { recursive: true });
     try {
       const saved = JSON.parse(await fs.readFile(path.join(dataDir, 'history.json'), 'utf8'));
-      preferences={...preferences,...saved.preferences,shortcuts:{...DEFAULT_SHORTCUTS,...saved.preferences?.shortcuts}}; modes=saved.modes?.length?upgradeModes(saved.modes):modes;modeId=saved.modeId||'general';
+      preferences={...preferences,...saved.preferences,shortcuts:{...DEFAULT_SHORTCUTS,...saved.preferences?.shortcuts}};
+      if(saved.preferences?.conversationVersion!==2) {preferences.screenUse=false;preferences.conversationVersion=2;}
+      if(preferences.baseInstructions===LEGACY_BASE_INSTRUCTIONS) preferences.baseInstructions=BASE_INSTRUCTIONS; modes=saved.modes?.length?upgradeModes(saved.modes):modes;modeId=saved.modeId||'general';
       for(const direction of ['Up','Down','Left','Right']) {
         if(preferences.shortcuts['move'+direction]==='Control+Alt+'+direction) preferences.shortcuts['move'+direction]='Command+'+direction;
       }
-      sessions = saved.sessions || []; selectedModel = saved.selectedModel || ''; selectedEffort = saved.selectedEffort || 'low'; selectedServiceTier = saved.selectedServiceTier || 'default'; microphone = saved.microphone || '';
+      sessions = saved.sessions || [];
+      for(const s of sessions) {
+        if(s.conversationVersion!==2) {
+          if(s.messages.findLast(m=>m.role==='assistant')?.kind==='latest' && s.transcriptThreadId) s.threadId=s.transcriptThreadId;
+          s.conversationVersion=2;delete s.transcriptThreadId;
+        }
+        s.attachments ||= [];s.sentTranscriptKeys ||= [];
+      } selectedModel = saved.selectedModel || ''; selectedEffort = saved.selectedEffort || 'low'; selectedServiceTier = saved.selectedServiceTier || 'default'; microphone = saved.microphone || '';
       for (const s of sessions) for (const m of s.messages) if (m.state === 'working') m.state = 'interrupted';
     } catch (e) { if (e.code !== 'ENOENT') problem = 'Could not load saved history. The existing file has been left in place.'; }
     if (!sessions.length) newSession(); else {activeId = sessions[0].id;modeId=active().modeId || modeId;}
@@ -386,6 +415,8 @@ else {
     bindEvents();
     compact = active().messages.length === 0;
     win = new BrowserWindow({ show:false, ...(process.platform==='darwin'?{type:'panel'}:{}), acceptFirstMouse:true, fullscreenable:false, hiddenInMissionControl:preferences.contentProtection, skipTaskbar:preferences.contentProtection, width: 690, height: compact ? 104 : 500, minWidth: 690, maxWidth: 690, minHeight: 104, title: 'Local Companion', backgroundColor: '#00000000', transparent: true, frame: false, roundedCorners: true, hasShadow: false, alwaysOnTop: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    inputDiagnostics=new InputDiagnostics({win,ipcMain,directory:path.join(dataDir,'diagnostics'),
+      getContext:()=>({busy,requesting,capturing,listening,audioBusy,private:preferences.contentProtection,noFocus:preferences.noFocusWhenPrivate})});
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.webContents.on('before-input-event', (event, input) => {
       if(input.type!=='keyDown' || !input.meta || input.control || input.alt || input.shift) return;
@@ -410,12 +441,15 @@ else {
   }).catch(e => { dialog.showErrorBox('Local Companion', e.message); app.quit(); });
 }
 ipcMain.handle('snapshot', () => snapshot());
+ipcMain.handle('save-draft', (_event, draft) => {
+  if(typeof draft==='string' && active()) {active().draft=draft;save();}
+});
 ipcMain.handle('action', async (_event, name, payload) => { try { return { ok: true, value: await action(name, payload) }; } catch (e) { report(e.message); return { ok: false, error: e.message }; } });
 app.on('activate', () => { if(win)showWindow(); });
 app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
   clearTimeout(saveTimer); privacy?.dispose();tray?.destroy();globalShortcut.unregisterAll(); audio?.close(); codex?.disconnect();
-  void writeState().finally(() => app.quit());
+  void Promise.allSettled([writeState(),inputDiagnostics?.dispose()]).finally(() => app.quit());
 });
 app.on('window-all-closed', () => app.quit());

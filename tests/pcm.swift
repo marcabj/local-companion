@@ -1,5 +1,30 @@
 @main struct PCMTests {
     static func main() throws {
+        // AVCapture can provide multichannel PCM without a channel-layout tag.
+        // Exercise the CMSampleBuffer path used by the microphone, not just convert().
+        for channels: AVAudioChannelCount in [1, 2, 3] {
+            emit(["test": "microphone", "channels": channels])
+            var asbd = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: channels * 4, mFramesPerPacket: 1, mBytesPerFrame: channels * 4, mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0)
+            var description: CMAudioFormatDescription?
+            precondition(CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &description) == noErr)
+            var block: CMBlockBuffer?
+            let bytes = 4800 * Int(channels) * 4
+            precondition(CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: bytes, flags: 0, blockBufferOut: &block) == noErr)
+            precondition(CMBlockBufferFillDataBytes(with: 0, blockBuffer: block!, offsetIntoDestination: 0, dataLength: bytes) == noErr)
+            var sample: CMSampleBuffer?
+            var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48000), presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+            var sampleSize = Int(asbd.mBytesPerFrame)
+            precondition(CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: description!, sampleCount: 4800, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &sample) == noErr)
+            if channels == 3 {
+                do { _ = try PCMConverter().read(sample!); fatalError("Accepted unsupported channel layout") }
+                catch { precondition(error.localizedDescription.contains("Unsupported captured audio format")) }
+                print("PASS: unsupported microphone layout throws instead of crashing")
+                continue
+            }
+            let output = try PCMConverter().read(sample!)
+            precondition(output.format.channelCount == 1 && output.format.sampleRate == 16000 && output.frameLength > 0)
+            print("PASS: microphone CMSampleBuffer with \(channels) channels and no layout")
+        }
         for interleaved in [true, false] {
             let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: interleaved)!
             let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!

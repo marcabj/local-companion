@@ -1,10 +1,12 @@
 const $ = id => document.getElementById(id);
 let modeEditorId = null;
+function saveDraft() { window.companion.saveDraft?.($('question').value); }
+document.addEventListener('input',event=>{if(event.target.id==='question')saveDraft();});
 let state, currentView = 'chat', settingsOpen = false, messagesKey = '', transcriptKey = '', historyKey = '';
 let displayedSession, latestTurnKey = '', pendingTurnAnchor = false;
 const escape = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const markdown = text => DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['img', 'iframe', 'style', 'form', 'input'] });
-async function act(name, value) { const result = await window.companion.action(name, value); return result; }
+async function act(name, value) { return window.companion.action(name, value); }
 function showView(name) { $('view-nav').hidden=name==='chat';$('view-title').textContent=({transcript:'Transcript',notes:'Notes',history:'History',modes:'Modes'})[name]||''; if(currentView!==name) $('content').scrollTop=0; currentView = name; act('view',name);document.body.classList.toggle('management-view',['modes','history'].includes(name)); document.body.classList.toggle('history-view', name === 'history' && !state?.compact); for (const el of document.querySelectorAll('.view')) el.hidden = el.id !== name; for (const el of document.querySelectorAll('[data-view]')) el.classList.toggle('selected', el.dataset.view === name); hideScreenPreview(); if(name==='chat')followLatestMessage(); else updateMessageScroll(); }
 function setOptions(select, entries, selected) {
   const signature = JSON.stringify(entries);
@@ -21,6 +23,7 @@ function renderPrivacyToggle(enabled) {
 }
 function render(s) {
   const expanding = state?.compact && !s.compact;
+  if(s.session?.id && s.session.id!==state?.session?.id) $('question').value=s.session.draft||'';
   state = s;
   renderPrivacyToggle(!!s.preferences.contentProtection);
   if(settingsOpen){$('content-protection').checked=!!s.preferences.contentProtection;$('no-focus').checked=!!s.preferences.noFocusWhenPrivate;renderPrivacyStatus();}
@@ -29,16 +32,16 @@ function render(s) {
   $('connection').textContent = s.status; $('connection-dot').classList.toggle('ready', s.connected);
   $('audio-status').textContent = s.audioStatus; $('error').hidden = !s.problem; $('error').querySelector('span').textContent = s.problem;
   $('model-label').textContent = s.selectedModel; $('model-toggle').title='Choose model · '+(s.models.find(m=>m.model===s.selectedModel)?.displayName || s.selectedModel || 'Connecting…')+' · '+s.selectedEffort+' · '+(s.models.find(m=>m.model===s.selectedModel)?.serviceTiers?.find(t=>t.id===s.selectedServiceTier)?.name || 'Standard'); $('model-toggle').disabled=s.busy || s.requesting || !s.models.length; $('send').hidden = s.busy; $('stop').hidden = !s.busy;
-  $('send').disabled = !s.connected || s.requesting; $('send').title = $('question').value.trim() ? 'Ask AI' : 'Answer latest spoken question · no screenshot';
-  $('screen').disabled=s.busy || s.requesting || !s.connected;
+  $('send').disabled = !s.connected || s.requesting || s.capturing; $('send').title = 'Send message, attached images and new speech';
+  $('screen').disabled=s.requesting || s.capturing;
   const screenShortcut=s.preferences.shortcuts?.screenshot;
-  $('screen').title='Screenshot and ask'+(screenShortcut?' · '+screenShortcut.replaceAll('Alt','Option').replaceAll('+','–')+(screenShortcut==="Control+Alt+'"?' (è on Canadian–CSA)':''):'');
+  $('screen').title='Attach screenshot'+(screenShortcut?' · '+screenShortcut.replaceAll('Alt','Option').replaceAll('+','–')+(screenShortcut==="Control+Alt+'"?' (è on Canadian–CSA)':''):'');
   $('active-mode').textContent=s.modes?.find(m=>m.id===s.modeId)?.name || 'General';
   $('end-session').disabled=s.busy||s.requesting||s.audioBusy||(!s.listening&&!s.session.transcript.length);
   for(const button of document.querySelectorAll('[data-action]')) button.disabled=s.busy||s.requesting||!s.connected;
   $('mode-toggle').disabled=s.busy || s.requesting;
   renderModes(s); renderNotes(s);
-   $('image').disabled = s.busy;
+   $('image').disabled = s.requesting || s.capturing;
   $('listen').disabled = s.audioBusy; $('listen').classList.toggle('active', s.listening);
   $('listen').classList.toggle('loading', s.audioBusy);
   const listenLabel = s.audioBusy ? 'Starting…' : s.listening ? 'Pause' : 'Listen';
@@ -48,8 +51,7 @@ function render(s) {
   $('transcript-empty-title').textContent = s.audioBusy ? 'Preparing local transcription…' : s.listening ? 'Listening…' : 'Ready to listen';
   $('transcript-empty-hint').textContent = s.audioBusy ? 'Loading Parakeet and opening your audio inputs.' : 'Play a video or speak. Words appear here after a short pause.';
   updateCaptureStatus();
-  $('attachment').hidden = !s.attachment;
-  if (s.attachment) { $('attachment').querySelector('img').src = s.attachment.preview; $('attachment').querySelector('span').textContent = s.attachment.name + ' · attached to next question'; }
+  renderAttachments(s.attachments || []);
   setOptions($('model'), s.models.map(m => [m.model, m.displayName || m.model]), s.selectedModel);
   const model = s.models.find(m => m.model === $('model').value);
   setOptions($('effort'), (model?.supportedReasoningEfforts || []).map(e => [e.reasoningEffort, e.reasoningEffort[0].toUpperCase() + e.reasoningEffort.slice(1)]), s.selectedEffort);
@@ -69,6 +71,14 @@ function render(s) {
   const hk = JSON.stringify([s.sessions, s.session.id,$('history-search').value]);
   if (hk !== historyKey) { $('history-list').innerHTML = s.sessions.filter(v=>!$('history-search').value || v.searchText?.includes($('history-search').value.toLowerCase()) || v.title.toLowerCase().includes($('history-search').value.toLowerCase())).map(v => `<button class="history-row ${v.id === s.session.id ? 'current' : ''}" data-session="${v.id}"><span>${escape(v.title)}</span><small>${new Date(v.createdAt).toLocaleString()}</small></button>`).join(''); historyKey = hk; }
 }
+function renderAttachments(images) {
+  const container=$('attachment');container.hidden=!images.length;
+  const key=JSON.stringify(images);
+  if(container.dataset.key===key)return;
+  container.innerHTML=images.map((image,i)=>`<div class="attachment-chip"><img src="${escape(image.preview)}" alt="Attachment ${i+1}"><span>${escape(image.name)} ${i+1}</span><button data-remove-image="${escape(image.id)}" type="button" aria-label="Remove attachment ${i+1}">×</button></div>`).join('');
+  container.dataset.key=key;
+}
+function messageImages(message) {return message?.images || (message?.image?[{preview:message.image}]:[]);}
 function followLatestMessage() {
   pendingTurnAnchor = true;
   layoutLatestTurn();
@@ -102,7 +112,8 @@ const copyIcon = '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" 
 const copiedIcon = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
 function assistantMarkup(m, i, messages) {
   const request = messages[i - 1];
-  const screen = request?.role === 'user' && request.image ? `<button class="viewed-screen" data-screen="${i - 1}" aria-label="Preview viewed screen">Viewed screen</button>` : '';
+  const images=messageImages(request);
+  const screen=request?.role==='user'?images.map((_,index)=>`<button class="viewed-screen" data-screen="${i-1}" data-image-index="${index}" aria-label="Preview image ${index+1}">${images.length===1?'Viewed screen':`Image ${index+1}`}</button>`).join(''):'';
   const working = m.state === 'working';
   const text = m.text ? markdown(m.text) : working ? '<span class="loading-dot" role="status" aria-label="Loading"></span>' : m.state === 'failed' || m.state === 'interrupted' ? '' : '<p>Nothing to add right now.</p>';
   const error = m.state === 'failed' || m.state === 'interrupted' ? `<div class="message-state">${escape(m.error || 'Answer stopped')}</div>` : '';
@@ -158,10 +169,10 @@ $('view-back').onclick=()=>{settings(false);showView('chat');};
 $('model-toggle').onclick = () => act('choose-model');
 $('privacy-toggle').onclick = () => act('toggle-privacy');
 $('settings-close').onclick = () => {settings(false);showView('chat');};
-$('ask-form').onsubmit = event => {event.preventDefault();return submit($('question').value.trim() ? 'assist' : 'latest');};
+$('ask-form').onsubmit = event => {event.preventDefault();return submit('assist');};
 $('question').onpointerdown=()=>{if(state?.preferences?.contentProtection && state?.preferences?.noFocusWhenPrivate)act('type-question');};
 $('question').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('ask-form').requestSubmit(); } };
-for (const id of ['image', 'stop', 'remove-image', 'dismiss-error', 'minimize', 'hide', 'export', 'permissions', 'microphone-permission']) $(id).onclick = () => act(id);
+for (const id of ['image', 'stop', 'dismiss-error', 'minimize', 'hide', 'export', 'permissions', 'microphone-permission']) $(id).onclick = () => act(id);
 $('listen').onclick = () => act('listen');
 $('reconnect').onclick = () => act('connect');
 $('refresh-apps').onclick = async () => {
@@ -185,7 +196,7 @@ $('messages').onclick = async event => {
 };
 function hideScreenPreview() { $('screen-preview').hidden = true; }
 function showScreenPreview(button) {
-  const image = state?.session.messages[Number(button.dataset.screen)]?.image;
+  const image = messageImages(state?.session.messages[Number(button.dataset.screen)])[Number(button.dataset.imageIndex)||0]?.preview;
   if(!image) return;
   const preview = $('screen-preview');
   preview.querySelector('img').src = image; preview.hidden = false;
@@ -203,16 +214,17 @@ $('messages').addEventListener('focusout',hideScreenPreview);
 document.addEventListener('keydown',event=>{if(event.key==='Escape')hideScreenPreview();});
 $('content').addEventListener('scroll',()=>{hideScreenPreview();updateMessageScroll();});
 $('jump-latest').onclick = () => { pendingTurnAnchor=false;$('content').scrollTo({top:$('content').scrollHeight,behavior:'smooth'}); };
-for (const button of document.querySelectorAll('[data-prompt]')) button.onclick = () => { $('question').value = button.dataset.prompt; $('question').focus(); if (button.dataset.prompt.includes('screen')) act('screen'); };
+for (const button of document.querySelectorAll('[data-prompt]')) button.onclick = () => { $('question').value = button.dataset.prompt; saveDraft();$('question').focus(); if (button.dataset.prompt.includes('screen')) act('screen'); };
 async function submit(kind='assist',extra={}) {
   if(state?.busy || state?.requesting) return;
   const text=['assist','screen','screen-transcript'].includes(kind)?$('question').value.trim():'';
   settings(false);showView('chat');
   const result=await act('ask',{kind,text,...extra});
-  if(result.ok && ['assist','screen','screen-transcript'].includes(kind)) $('question').value='';
+  if(result.ok && ['assist','screen','screen-transcript'].includes(kind) && $('question').value.trim()===text) { $('question').value='';saveDraft(); }
 }
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>submit(button.dataset.action);
-$('screen').onclick=()=>submit('screen');
+$('screen').onclick=()=>act('screen');
+$('attachment').onclick=event=>{const button=event.target.closest('[data-remove-image]');if(button)act('remove-image',button.dataset.removeImage);};
 $('manual-screen').onclick=()=>act('screen');
 $('end-session').onclick=()=>act('end-session');
 $('history-search').oninput=()=>render(state);
@@ -249,7 +261,7 @@ for(const [id,key] of Object.entries({'screen-use':'screenUse','smart':'smart','
 $('language').onchange=()=>act('preferences',{language:$('language').value});
 $('save-base').onclick=()=>act('preferences',{baseInstructions:$('base-instructions').value});
 $('save-shortcuts').onclick=()=>act('preferences',{shortcuts:Object.fromEntries([...document.querySelectorAll('[data-shortcut]')].map(el=>[el.dataset.shortcut,el.value.trim()]))});
-window.companion.onCommand?.(command=>{if(command==='focus-question'){$('question').focus();return;}if(['assist','latest','screen','screen-transcript'].includes(command))submit(command==='assist'?'latest':command);});
+window.companion.onCommand?.(command=>{if(command==='focus-question'){$('question').focus();return;}if(command==='screen'){act('screen');return;}if(['assist','latest','screen-transcript'].includes(command))submit(command==='assist'?'latest':command);});
 window.companion.onNavigate?.(async view=>{if(view==='settings'){await settings(true);return;}settings(false);if(view!=='new')await act('compact',false);showView(view==='new'?'chat':view);});
 window.companion.onScroll?.(delta=>$('content').scrollBy({top:delta,behavior:'smooth'}));
 window.companion.onState(render);

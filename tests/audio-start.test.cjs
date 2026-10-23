@@ -29,6 +29,18 @@ test('native startup has a bounded timeout', async t => {
   p.startupTimeout = 200;
   await assert.rejects(p.start({ microphone: 'hang' }), /timed out/i);
 });
+test('an unexpected helper exit after readiness is reported and prevents stale submission',async t=>{
+  const p=await pipeline(t);const problems=[];p.on('problem',message=>problems.push(message));
+  await p.start({microphone:'crash'});
+  await new Promise(resolve=>p.capture.once('close',resolve));
+  assert.equal(p.listening,false);
+  assert.match(problems.join(' '),/capture.*stopped.*SIGKILL/i);
+  await assert.rejects(p.flush(),/capture.*stopped/i);
+});
+test('an intentional pause does not report a helper crash',async t=>{
+  const p=await pipeline(t);const problems=[];p.on('problem',message=>problems.push(message));
+  await p.start();await p.stop();assert.deepEqual(problems,[]);
+});
 test('flush waits for the emitted speech to finish transcribing without stopping capture',async t=>{
  const p=await pipeline(t);let received='';p.transcribe=async()=>{await new Promise(r=>setTimeout(r,40));return {text:'the last spoken question',source:'Computer'}};p.on('transcript',v=>received=v.text);
  await p.start();await p.flush();assert.equal(received,'the last spoken question');assert.equal(p.listening,true);

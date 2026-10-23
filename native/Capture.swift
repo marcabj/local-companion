@@ -139,10 +139,21 @@ final class Capture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @un
     func startMicrophone(uid: String) throws {
         let device: AVCaptureDevice?
         if uid.isEmpty { device = AVCaptureDevice.default(for: .audio) }
-        else { device = microphones().first { $0.uniqueID == uid } }
+        else {
+            device = microphones().first { $0.uniqueID == uid } ?? AVCaptureDevice.default(for: .audio)
+            if let device, device.uniqueID != uid {
+                emit(["type": "status", "message": "Selected microphone disconnected; using \(device.localizedName)."])
+            }
+        }
         guard let device else { throw AudioError.message("The selected microphone is unavailable. Choose the system default microphone in Settings.") }
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureAudioDataOutput()
+        // Device defaults can expose multichannel layouts AVAudioPCMBuffer cannot
+        // represent. Negotiate the mono PCM format used by speech recognition.
+        output.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
         guard microphoneSession.canAddInput(input), microphoneSession.canAddOutput(output) else {
             throw AudioError.message("Cannot open the selected microphone.")
         }
@@ -347,7 +358,14 @@ final class PCMConverter {
     }
     func read(_ sample: CMSampleBuffer) throws -> AVAudioPCMBuffer {
         guard let description = CMSampleBufferGetFormatDescription(sample) else { throw AudioError.message("Missing captured audio format.") }
-        let format = AVAudioFormat(cmAudioFormatDescription: description)
+        // The non-failable cmAudioFormatDescription initializer can return nil
+        // for unsupported layouts, which crashes inside AVAudioPCMBuffer.
+        guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description),
+              asbd.pointee.mFormatID == kAudioFormatLinearPCM,
+              asbd.pointee.mSampleRate > 0, asbd.pointee.mChannelsPerFrame > 0,
+              let format = AVAudioFormat(streamDescription: asbd) else {
+            throw AudioError.message("Unsupported captured audio format. Choose another microphone and retry Listen.")
+        }
         let length = CMSampleBufferGetNumSamples(sample)
         guard length > 0, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(length)) else { throw AudioError.message("Empty captured audio.") }
         pcm.frameLength = AVAudioFrameCount(length)

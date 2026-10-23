@@ -6,10 +6,10 @@ This is a source release of a local prototype. It is inspired by Cluely's intera
 
 ## What it does
 
-- **Screen → answer:** capture the current screen and ask about it in one action. Screen-only requests start a fresh model conversation so an earlier spoken question does not contaminate a new visual task.
-- **Listen → latest question:** transcribe continuously, then answer the latest spoken question on demand. Listening continues while an answer generates.
-- **Screen + transcript:** combine a fresh screenshot with the latest relevant speech.
-- **Follow-ups:** continue a spoken or typed conversation, or start a new chat for fresh context.
+- **Continuous chat:** typed messages, screenshots and speech share one Codex conversation until New chat. Mode instructions configure it separately from your messages.
+- **Screen → queue → Send:** collect multiple screenshots or attach PNG/JPEG files, remove any individually, then send with optional text. Capture alone does not request an answer.
+- **Listen → Send:** transcribe continuously and submit new speech on demand. Listening continues while an answer generates.
+- **Quick Assist:** explicitly capture and send a fresh screenshot with queued images, new speech and your message.
 - **Floating chat:** translucent panel, streamed Markdown and code, questions anchored near the top, screenshot previews and a jump-to-bottom button.
 - **Model and mode pickers:** choose the Codex model, reasoning effort and advertised answer-speed tier; customize interview, coding, behavioral and other modes with background and reference files.
 - **Local history:** save conversations, transcripts and notes; import text, PDF and DOCX context.
@@ -40,7 +40,7 @@ open "$HOME/Applications/Local Companion.app"
 
 The build compiles the Swift capture helper, packages the arm64 Electron app and installs it in `~/Applications/Local Companion.app`. Quit an existing Local Companion before rebuilding. The app uses the checkout's `.venv` and transcription scripts, so keep the checkout in place after building. `npm start` runs the development Electron app after the helper has been built; macOS can treat that as a different application for permissions.
 
-The first Listen can take longer while Parakeet downloads `mlx-community/parakeet-tdt-0.6b-v3` into your Hugging Face cache. The model stays warm until the app quits.
+The first Listen can take longer while Parakeet downloads `mlx-community/parakeet-tdt-0.6b-v3` into your Hugging Face cache. The model stays warm during short pauses. After 45 paused minutes with all transcription finished, its worker exits to release memory. Listen automatically reloads it from cache.
 
 ### Permissions and signing
 
@@ -52,9 +52,9 @@ The one-time signing setup creates a personal certificate in a dedicated local k
 
 | Action | Default shortcut |
 | --- | --- |
-| Answer latest spoken question, transcript only | Control–Option–Enter |
-| Capture screen and answer | Control–Option–' |
-| Capture screen + latest transcript and answer | Control–Option–`\` |
+| Send new speech, preserving draft and queued images | Control–Option–Enter |
+| Queue a screenshot | Control–Option–' |
+| Quick Assist: capture screen and send | Control–Option–`\` |
 | Listen / Pause | Control–Option–L |
 | New chat | Control–Option–N |
 | Show / hide panel | Control–Option–Space |
@@ -64,18 +64,21 @@ The one-time signing setup creates a personal certificate in a dedicated local k
 
 Screen shortcuts use physical key positions. On Canadian–CSA, the screen-only and combined keys are **è** and **à**. Shortcuts are editable in Advanced settings and may conflict with other applications.
 
-- Start **Listen** once. Blank Enter in the composer or Control–Option–Enter answers the latest spoken question without taking a screenshot.
-- Click **Screen** or its shortcut to solve the visible task. You can type a specific instruction first. A screenshot temporarily hides the panel to keep it out of the captured image.
-- Choose **… → Screen + transcript** or the combined shortcut to use both sources.
+- Start **Listen** once. Enter sends your message, queued images and new speech. Control–Option–Enter sends only new speech, preserving the draft and queued images.
+- Click **Screen** to queue a screenshot without submitting. Capture several views, add any text, then Send. The paperclip accepts multiple image files. Capturing temporarily hides the panel.
+- Choose **… → Quick Assist · screen + voice** or the combined shortcut to capture and send immediately. Automatic screen capture for typed messages is optional and initially off.
 - Click the square **Stop** button in the composer to interrupt thinking or generation. Click **Pause** to stop audio capture separately.
 - Open **Model** for model, effort and speed. Faster service tiers can consume more of your Codex allowance; the menu uses descriptions advertised by the provider.
 - Open **Mode** to select or edit instructions, background and reference files.
-- Hover or focus **Viewed screen** for the image preview. Copy appears after the response finishes; Retry is in the small response menu.
-- **…** contains Transcript, History, Notes, Settings and New interview. The eye/incognito button toggles Privacy mode while leaving the panel visible.
+- Hover or focus each image label for its preview. Copy appears after the response finishes; Retry is in the small response menu.
+- **…** contains Transcript, History, Notes, Settings and New chat. The eye/incognito button toggles Privacy mode while leaving the panel visible.
+
+
+New chat / Command–N leaves an already fresh chat in place, preserving its draft and queued images.
 
 ## Data and account usage
 
-Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to your configured Codex provider. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
+Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to your configured Codex provider. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
 
 The app starts its own `codex app-server --listen stdio://` process and uses existing Codex authentication. The Codex desktop app does not need to be open. `COMPANION_CODEX` can point to a specific CLI executable. The companion disables configured development MCP servers for its own threads and enables web search only when Smart research is on.
 
@@ -95,16 +98,19 @@ npm test                # Offline JS tests; macOS signing test uses the setup id
 npm run test:native     # Swift PCM/capture-buffer tests; macOS only
 ```
 
-The tests cover request isolation, transcript flushing, cancellation transport, renderer behavior, audio readiness and persistent signing identity. They do not call models. CI runs the portable tests on Linux, where the macOS signing test is skipped.
+The tests cover chat continuity, multiple-image queues, incremental speech, worker idle unloading and reloading, transcript flushing, cancellation transport, renderer behavior, audio readiness and persistent signing identity. They do not call models. CI runs the portable tests on Linux, where the macOS signing test is skipped.
 
-Live checks are separate and consume account usage:
+Live Codex checks are separate and consume account usage:
 
 ```sh
+node tests/chat-flow-smoke.cjs # expects .build/test-screen.png containing 42
 node tests/screen-context-smoke.cjs /absolute/path/to/invert-binary-tree.png
 node tests/live-capture-check.cjs 'expected speech' Computer
 ```
 
 `tests/codex-smoke.cjs` also checks real image input, continuation and cancellation; it expects a test image at `.build/test-screen.png` containing the number 42. Live checks and their generated evidence are not included in `npm test`.
+
+`node tests/audio-idle-smoke.cjs /absolute/path/to/speech.wav` verifies real local Parakeet unload/reload using a shortened test timeout and a known mono 16 kHz WAV, without Codex calls.
 
 The source is organized as follows:
 
@@ -120,7 +126,7 @@ The source is organized as follows:
 
 Transcription is emitted in utterance segments, not partial words. Audio channels are labeled Me/Computer, not verified speaker identities; speaker playback may be picked up by both. Headphones reduce duplicate pickup. Echo cancellation, diarization and automatic answering are not implemented.
 
-Live answers use up to 24,000 recent transcript characters; recaps and notes use up to 160,000. Reference files are limited to 20 MB input, 100,000 extracted characters per file and 200,000 per mode. Scanned PDFs need OCR. Full conversation histories, model context limits and provider behavior can affect answers.
+Live answers use up to 24,000 new transcript characters; recaps and notes use up to 160,000. Reference files are limited to 20 MB input, 100,000 extracted characters per file and 200,000 per mode. Scanned PDFs need OCR. Full conversation histories, model context limits and provider behavior can affect answers.
 
 This prototype has no cloud sync, calendar integration, account/billing system, automatic updater or notarized installer. Privacy mode uses standard Electron/macOS window controls and cannot hide the process from system tools. See [Electron's capture-exclusion limitations](https://www.electronjs.org/docs/latest/api/browser-window#winsetcontentprotectionenable-macos-windows).
 
@@ -129,3 +135,5 @@ This prototype has no cloud sync, calendar integration, account/billing system, 
 [REA](https://github.com/morluto/rea) helped inspect interaction patterns during development. It is not embedded in the app. The public runtime uses independently written application code and mode instructions. Transcription uses [Parakeet MLX](https://github.com/senstella/parakeet-mlx) and the [Parakeet model](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3); their own terms apply. Electron, Geist, marked and DOMPurify are installed as dependencies with their respective licenses.
 
 Local Companion source is licensed under [ISC](LICENSE).
+
+Local input diagnostics are kept in `~/Library/Application Support/Local Companion/diagnostics/input.jsonl` and `input.previous.jsonl`, capped at 1 MiB each. They record window focus/enabled state, operation flags, renderer health replies, and native/DOM input counts every five seconds. They do not record key values, message text, screenshots, or audio. If interaction stops, keep the app open so the failed state can be inspected before restarting.

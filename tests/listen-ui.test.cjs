@@ -26,28 +26,28 @@ test('Listen starts background capture without opening a different view', async 
   assert.ok(actions.includes('listen'), 'The real capture action must still run');
 });
 
-test('blank input submits latest question and transcript rows submit their selected index', async()=>{
+test('blank input submits the current composer and transcript rows submit their selected index', async()=>{
  const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));
  const actions=[];window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onState(){},onLevel(){},snapshot:async()=>({})};
  const context=vm.createContext({window,document,console,setTimeout,clearTimeout});
  vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
  vm.runInContext("state={busy:false,requesting:false,compact:true};",context);
  await document.getElementById('ask-form').onsubmit({preventDefault(){}});
- assert.equal(actions.find(a=>a.name==='ask').value.kind,'latest');assert.equal(actions.find(a=>a.name==='ask').value.text,'');
+ assert.equal(actions.find(a=>a.name==='ask').value.kind,'assist');assert.equal(actions.find(a=>a.name==='ask').value.text,'');
  actions.length=0;document.getElementById('transcript-lines').innerHTML='<button data-transcript="3">A question</button>';
  document.getElementById('transcript-lines').onclick({target:document.querySelector('[data-transcript]')});
  await new Promise(resolve=>setImmediate(resolve));assert.equal(actions.find(a=>a.name==='ask').value.transcriptIndex,3);
 });
 
- test('Screen submits the typed prompt with a screenshot action',async()=>{
+ test('Screen queues a screenshot and preserves the typed draft',async()=>{
  const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));
  const actions=[];window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onState(){},onLevel(){},snapshot:async()=>({})};
  const context=vm.createContext({window,document,console,setTimeout,clearTimeout});
  vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
  vm.runInContext("state={busy:false,requesting:false,compact:true};",context);
  document.getElementById('question').value='Explain this code';await document.getElementById('screen').onclick();
- assert.equal(actions.find(a=>a.name==='ask').value.kind,'screen');assert.equal(actions.find(a=>a.name==='ask').value.text,'Explain this code');
- assert.equal(document.getElementById('question').value,'');
+ assert.deepEqual(actions,[{name:'screen',value:undefined}]);
+ assert.equal(document.getElementById('question').value,'Explain this code');
  });
 
 
@@ -123,4 +123,23 @@ test('combined shortcut command submits the composer text with the explicit comb
  command('screen-transcript');await new Promise(resolve=>setImmediate(resolve));
  assert.equal(actions.find(a=>a.name==='ask').value.kind,'screen-transcript');assert.equal(actions.find(a=>a.name==='ask').value.text,'Use the diagram to explain his question');
  assert.equal(document.getElementById('question').value,'');
+});
+
+ test('multiple queued images can be removed individually and sent with blank text',async()=>{
+ const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));const actions=[];
+ window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onState(){},onLevel(){},snapshot:async()=>({})};
+ const context=vm.createContext({window,document,console,setTimeout,clearTimeout});vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
+ vm.runInContext("state={busy:false,requesting:false,compact:true};renderAttachments([{id:'a',name:'Screen',preview:'data:image/png;base64,AA=='},{id:'b',name:'Screen',preview:'data:image/png;base64,AA=='}])",context);
+ assert.equal(document.querySelectorAll('.attachment-chip').length,2);
+ document.getElementById('attachment').onclick({target:document.querySelector('[data-remove-image="a"]')});
+ assert.deepEqual(actions[0],{name:'remove-image',value:'a'});
+ await document.getElementById('ask-form').onsubmit({preventDefault(){}});assert.equal(actions.find(a=>a.name==='ask').value.kind,'assist');
+ });
+
+test('typing persists the composer draft',async()=>{
+ const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));
+ const drafts=[];window.companion={saveDraft:v=>drafts.push(v),action:async()=>({ok:true}),onState(){},onLevel(){},snapshot:async()=>({})};
+ const context=vm.createContext({window,document,console,setTimeout,clearTimeout});vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
+ const field=document.getElementById('question');field.value='unfinished message';field.dispatchEvent(new window.Event('input',{bubbles:true}));
+ assert.equal(drafts.at(-1),'unfinished message');
 });
