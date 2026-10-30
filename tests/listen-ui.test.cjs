@@ -4,6 +4,26 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { parseHTML } = require('linkedom');
 
+test('provider controls route through app actions and remain available when the backend is disconnected',async()=>{
+ const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));const actions=[];
+ window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onState(){},onLevel(){},snapshot:async()=>({})};
+ const context=vm.createContext({window,document,console,setTimeout,clearTimeout,marked:{parse:s=>s},DOMPurify:{sanitize:s=>s}});
+ vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
+ const h=require('./workflow-harness.cjs')();const fixture=JSON.parse(h.run('JSON.stringify(snapshot())'));
+ fixture.selectedProvider='claude';fixture.connected=false;fixture.models=[];fixture.selectedModel='';fixture.status='Claude disconnected';
+ context.fixture=fixture;vm.runInContext('render(fixture)',context);
+ assert.equal(document.getElementById('provider-label').textContent,'Claude');
+ assert.equal(document.getElementById('provider-toggle').disabled,false);
+ assert.equal(document.getElementById('model-toggle').disabled,true);
+ assert.equal(document.getElementById('reconnect').textContent,'Reconnect Claude');
+ assert.equal(document.getElementById('claude-login').hidden,false);
+ await document.getElementById('provider-toggle').onclick();assert.equal(actions.at(-1).name,'choose-provider');
+ // LinkeDOM does not implement the browser's select.value setter.
+ Object.defineProperty(document.getElementById('provider'),'value',{configurable:true,value:'codex'});await document.getElementById('provider').onchange();
+ assert.equal(actions.at(-1).name,'provider');assert.equal(actions.at(-1).value,'codex');
+ await document.getElementById('claude-login').onclick();assert.equal(actions.at(-1).name,'claude-login');
+});
+
 test('Listen starts background capture without opening a different view', async () => {
   const { window, document } = parseHTML(fs.readFileSync(require.resolve('../src/index.html'), 'utf8'));
   document.body.classList.add('compact');

@@ -1,17 +1,18 @@
 # Local Companion
 
-A floating macOS assistant for screenshots, live audio transcripts and quick answers. Responses run through your signed-in Codex CLI; NVIDIA Parakeet transcribes microphone and computer audio locally on Apple Silicon.
+A floating macOS assistant for screenshots, live audio transcripts and quick answers. Responses run through your signed-in Codex CLI or Claude Code CLI; NVIDIA Parakeet transcribes microphone and computer audio locally on Apple Silicon.
 
 This is a source release of a local prototype. It is inspired by Cluely's interaction design and is independent of Cluely. It includes original mode instructions and no extracted Cluely binaries or assets.
 
 ## What it does
 
-- **Continuous chat:** typed messages, screenshots and speech share one Codex conversation until New chat. Mode instructions configure it separately from your messages.
+- **Continuous chat:** typed messages, screenshots and speech share one conversation until New chat. Mode instructions configure it separately from your messages.
 - **Screen → queue → Send:** collect multiple screenshots or attach PNG/JPEG files, remove any individually, then send with optional text. Capture alone does not request an answer.
 - **Listen → Send:** transcribe continuously and submit new speech on demand. Listening continues while an answer generates.
 - **Quick Assist:** explicitly capture and send a fresh screenshot with queued images, new speech and your message.
 - **Floating chat:** translucent panel, streamed Markdown and code, questions anchored near the top, screenshot previews and a jump-to-bottom button.
-- **Model and mode pickers:** choose the Codex model, reasoning effort and advertised answer-speed tier; customize interview, coding, behavioral and other modes with background and reference files.
+- **Answer provider:** switch between Codex and Claude Code from the toolbar or Settings. Each provider keeps its own model settings and session; switching carries the chat's earlier messages and images to the newly selected provider. Requests never fall back silently to the other provider.
+- **Model and mode pickers:** choose the provider's model, reasoning effort and advertised answer-speed tier; customize interview, coding, behavioral and other modes with background and reference files.
 - **Local history:** save conversations, transcripts and notes; import text, PDF and DOCX context.
 - **Privacy mode:** requests window capture exclusion and hides the Dock/Mission Control entry. Protection depends on macOS and the capture application; it is not a universal invisibility guarantee.
 
@@ -20,8 +21,10 @@ This is a source release of a local prototype. It is inspired by Cluely's intera
 - Apple Silicon Mac with macOS 15 or newer.
 - Node.js 22.12 or newer, npm and Python 3.12.
 - Xcode Command Line Tools (`xcode-select --install`).
-- [Codex CLI](https://developers.openai.com/codex/cli), installed and signed in with `codex login`.
-- Internet access for Codex answers and the first Parakeet model download.
+- At least one answer provider:
+  - [Codex CLI](https://developers.openai.com/codex/cli), installed and signed in with `codex login`; or
+  - [Claude Code](https://code.claude.com/docs/en/quickstart), installed and signed in with `claude auth login`.
+- Internet access for answers and the first Parakeet model download.
 
 ## Build and run
 
@@ -68,7 +71,8 @@ Screen shortcuts use physical key positions. On Canadian–CSA, the screen-only 
 - Click **Screen** to queue a screenshot without submitting. Capture several views, add any text, then Send. The paperclip accepts multiple image files. Capturing temporarily hides the panel.
 - Choose **… → Quick Assist · screen + voice** or the combined shortcut to capture and send immediately. Automatic screen capture for typed messages is optional and initially off.
 - Click the square **Stop** button in the composer to interrupt thinking or generation. Click **Pause** to stop audio capture separately.
-- Open **Model** for model, effort and speed. Faster service tiers can consume more of your Codex allowance; the menu uses descriptions advertised by the provider.
+- Click **Codex / Claude** beside Model to choose the answer provider. Wait for an active answer to finish before switching. Each completed answer shows which provider wrote it.
+- Open **Model** for model, effort and speed. Faster service tiers can consume more of your Codex allowance; the menu uses descriptions advertised by the provider. Claude offers the Sonnet, Opus and Haiku aliases at Standard speed; your account determines which can answer.
 - Open **Mode** to select or edit instructions, background and reference files.
 - Hover or focus each image label for its preview. Copy appears after the response finishes; Retry is in the small response menu.
 - **…** contains Transcript, History, Notes, Settings and New chat. The eye/incognito button toggles Privacy mode while leaving the panel visible.
@@ -78,18 +82,20 @@ New chat / Command–N leaves an already fresh chat in place, preserving its dra
 
 ## Data and account usage
 
-Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to your configured Codex provider. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
+Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to the selected answer provider. Switching providers sends earlier messages and images that provider has not yet seen with the next request. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
 
 The app starts its own `codex app-server --listen stdio://` process and uses existing Codex authentication. The Codex desktop app does not need to be open. `COMPANION_CODEX` can point to a specific CLI executable. The companion disables configured development MCP servers for its own threads and enables web search only when Smart research is on.
 
+For Claude, choose **Settings → Answer provider → Claude**, click **Sign in to Claude…**, finish the login in Terminal, then click **Reconnect Claude**. The app runs `claude -p` with streaming JSON input and output and resumes its own Claude session on follow-up turns. It uses your normal Claude Code authentication; an API key set in the environment takes precedence and uses API billing, which the connection status shows. `COMPANION_CLAUDE` can point to a specific executable. Mode instructions go in the system prompt. Normal answers run without tools; Smart research enables only WebSearch and WebFetch. Configured MCP servers and settings are excluded. Claude Code limits piped input to 10 MB, so an oversized request reports an error and keeps unsent inputs. Check Anthropic's terms before using subscription login with third-party tools.
+
 Application data lives in `~/Library/Application Support/Local Companion/`:
 
-- `history.json`: messages, transcripts, notes, settings, mode/reference text, image previews and Codex thread IDs.
+- `history.json`: messages, transcripts, notes, settings, mode/reference text, image previews and separate Codex/Claude session IDs.
 - `images/`: attached image files.
 - `audio-temp/`: temporary WAV segments, normally removed after transcription.
-- `workspace/`: working directory for the companion's Codex process.
+- `workspace/`: working directory for the companion's Codex and Claude processes.
 
-Codex also retains its normal local conversation state. There is no automatic history retention limit; an abrupt exit can leave temporary audio files. The repository ignores runtime state, recordings, screenshots, credentials, virtual environments and build outputs.
+Each CLI also retains its normal local conversation state. There is no automatic history retention limit; an abrupt exit can leave temporary audio files. The repository ignores runtime state, recordings, screenshots, credentials, virtual environments and build outputs.
 
 ## Development and tests
 
@@ -98,24 +104,27 @@ npm test                # Offline JS tests; macOS signing test uses the setup id
 npm run test:native     # Swift PCM/capture-buffer tests; macOS only
 ```
 
-The tests cover chat continuity, multiple-image queues, incremental speech, worker idle unloading and reloading, transcript flushing, cancellation transport, renderer behavior, audio readiness and persistent signing identity. They do not call models. CI runs the portable tests on Linux, where the macOS signing test is skipped.
+The tests cover chat continuity, multiple-image queues, incremental speech, worker idle unloading and reloading, transcript flushing, cancellation transport, renderer behavior, audio readiness, Claude streaming/sign-in/cancellation handling, provider routing and persistent signing identity. They do not call models; Claude tests use a local fixture in place of the CLI. CI runs the portable tests on Linux, where the macOS signing test is skipped.
 
-Live Codex checks are separate and consume account usage:
+Live checks are separate and consume account usage:
 
 ```sh
+node tests/provider-smoke.cjs claude # or codex; expects .build/test-screen.png containing 42
 node tests/chat-flow-smoke.cjs # expects .build/test-screen.png containing 42
 node tests/screen-context-smoke.cjs /absolute/path/to/invert-binary-tree.png
 node tests/live-capture-check.cjs 'expected speech' Computer
 ```
 
-`tests/codex-smoke.cjs` also checks real image input, continuation and cancellation; it expects a test image at `.build/test-screen.png` containing the number 42. Live checks and their generated evidence are not included in `npm test`.
+`tests/codex-smoke.cjs` also checks real image input, continuation and cancellation; it expects a test image at `.build/test-screen.png` containing the number 42. `tests/provider-smoke.cjs` checks a cross-provider history handoff, image input, continuation and Stop against the named provider. Live checks and their generated evidence are not included in `npm test`.
 
 `node tests/audio-idle-smoke.cjs /absolute/path/to/speech.wav` verifies real local Parakeet unload/reload using a shortened test timeout and a known mono 16 kHz WAV, without Codex calls.
 
 The source is organized as follows:
 
 - `src/main.cjs`: Electron lifecycle, shortcuts, capture and request routing.
+- `src/providers.cjs`: provider selection, event routing and cross-provider history handoff.
 - `src/codex.cjs`: Codex app-server transport and interruption.
+- `src/claude.cjs`: Claude Code CLI streaming transport, session resume and interruption.
 - `src/audio.cjs` and `scripts/transcribe.py`: audio segmentation and local ASR worker.
 - `native/Capture.swift`: microphone capture, Core Audio taps and PCM conversion.
 - `src/prompts.cjs` and `src/interview-mode-prompts.json`: request context and editable modes.

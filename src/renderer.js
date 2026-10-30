@@ -30,6 +30,18 @@ function render(s) {
   document.body.classList.toggle('compact', s.compact);
   document.body.classList.toggle('history-view', !s.compact && currentView === 'history' && !settingsOpen);
   $('connection').textContent = s.status; $('connection-dot').classList.toggle('ready', s.connected);
+  const provider=s.selectedProvider==='claude'?'Claude':'Codex';
+  $('provider-label').textContent=provider;
+  $('provider-toggle').title=`Route answers to ${provider} · Choose provider`;
+  $('provider-toggle').setAttribute('aria-label',`Answer provider: ${provider}. Choose provider`);
+  $('provider-toggle').disabled=s.busy || s.requesting || s.connecting;
+  $('provider').value=s.selectedProvider || 'codex';
+  $('provider').disabled=s.busy || s.requesting || s.connecting;
+  $('provider-help').textContent=s.selectedProvider==='claude'?'Uses Claude Code on this Mac. Sign in below, finish in Terminal, then reconnect. Model aliases follow Claude defaults; availability depends on your account. Switching providers shares this chat’s earlier messages and images with the selected provider.':'Uses your signed-in Codex CLI. Switching providers shares this chat’s earlier messages and images with the selected provider.';
+  $('claude-setup').hidden=s.selectedProvider!=='claude';
+  $('claude-login').hidden=s.selectedProvider!=='claude';
+  $('reconnect').textContent=`Reconnect ${provider}`;
+  $('reconnect').disabled=s.busy || s.requesting || s.connecting;
   $('audio-status').textContent = s.audioStatus; $('error').hidden = !s.problem; $('error').querySelector('span').textContent = s.problem;
   $('model-label').textContent = s.selectedModel; $('model-toggle').title='Choose model · '+(s.models.find(m=>m.model===s.selectedModel)?.displayName || s.selectedModel || 'Connecting…')+' · '+s.selectedEffort+' · '+(s.models.find(m=>m.model===s.selectedModel)?.serviceTiers?.find(t=>t.id===s.selectedServiceTier)?.name || 'Standard'); $('model-toggle').disabled=s.busy || s.requesting || !s.models.length; $('send').hidden = s.busy; $('stop').hidden = !s.busy;
   $('send').disabled = !s.connected || s.requesting || s.capturing; $('send').title = 'Send message, attached images and new speech';
@@ -117,7 +129,7 @@ function assistantMarkup(m, i, messages) {
   const working = m.state === 'working';
   const text = m.text ? markdown(m.text) : working ? '<span class="loading-dot" role="status" aria-label="Loading"></span>' : m.state === 'failed' || m.state === 'interrupted' ? '' : '<p>Nothing to add right now.</p>';
   const error = m.state === 'failed' || m.state === 'interrupted' ? `<div class="message-state">${escape(m.error || 'Answer stopped')}</div>` : '';
-  const controls = !working ? `<div class="response-actions">${m.text?.trim() ? `<button class="response-copy" data-copy="${i}" title="Copy response" aria-label="Copy response">${copyIcon}</button>` : ''}${i === messages.length - 1 ? '<details class="response-more"><summary aria-label="Response actions" title="Response actions">···</summary><button data-retry="true">Retry answer</button></details>' : ''}</div>` : '';
+  const controls = !working ? `<div class="response-actions">${m.text?.trim() ? `<button class="response-copy" data-copy="${i}" title="Copy response" aria-label="Copy response">${copyIcon}</button>` : ''}${i === messages.length - 1 ? '<details class="response-more"><summary aria-label="Response actions" title="Response actions">···</summary><button data-retry="true">Retry answer</button></details>' : ''}${m.provider?`<span class="response-provider" title="${escape(m.model)}">${m.provider==='claude'?'Claude':'Codex'}</span>`:''}</div>` : '';
   return `${screen}<div class="markdown">${text}</div>${error}${controls}`;
 }
 function renderMessages(s) {
@@ -167,6 +179,10 @@ $('more-toggle').onclick=()=>act('more');
 $('mode-toggle').onclick=()=>act('choose-mode');
 $('view-back').onclick=()=>{settings(false);showView('chat');};
 $('model-toggle').onclick = () => act('choose-model');
+$('provider-toggle').onclick = () => act('choose-provider');
+$('provider').onchange = () => act('provider',$('provider').value);
+$('claude-setup').onclick = () => act('claude-setup');
+$('claude-login').onclick = () => act('claude-login');
 $('privacy-toggle').onclick = () => act('toggle-privacy');
 $('settings-close').onclick = () => {settings(false);showView('chat');};
 $('ask-form').onsubmit = event => {event.preventDefault();return submit('assist');};

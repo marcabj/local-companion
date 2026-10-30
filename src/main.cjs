@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
-const { CodexClient } = require('./codex.cjs');
+const { ProviderClient, PROVIDERS, providerName, routeState, routeRequest } = require('./providers.cjs');
+const { findClaude } = require('./claude.cjs');
 const { AudioPipeline } = require('./audio.cjs');
 const { BASE_INSTRUCTIONS, LEGACY_BASE_INSTRUCTIONS, ACTIONS, defaultModes, upgradeModes, buildRequest } = require('./prompts.cjs');
 const { WindowPrivacy } = require('./privacy.cjs');
@@ -23,6 +24,10 @@ const captureBinary = app.isPackaged ? path.join(process.resourcesPath, 'Compani
 let win, codex, audio, connecting, activeId, audioSessionId, privacy, tray, inputDiagnostics;
 let sessions = [];
 let models = [];
+let selectedProvider = 'codex', providerSelections = {};
+const backendName = () => providerName(selectedProvider);
+let connectionAuth = '';
+const connectionStatus = () => `${backendName()} ${connected?'connected':'disconnected'}${connected && selectedProvider==='claude' && /api|third_party/.test(connectionAuth)?' · API billing':''}`;
 let status = 'Connecting to Codex…';
 let connected = false, busy = false, audioBusy = false, listening = false;
 let selectedServiceTier = 'default';
@@ -39,7 +44,7 @@ const active = () => sessions.find(s => s.id === activeId);
 const isFreshChat = () => { const s=active();return s && !s.messages.length && !s.transcript.length && !s.threadId && !s.notes; };
 function newSession() { const s = { id: randomUUID(), title: 'New conversation', createdAt: Date.now(), messages: [], transcript: [], threadId: null, conversationVersion:2, attachments:[], sentTranscriptKeys:[], modeId, notes:'', listenedMs:0 }; sessions.unshift(s); activeId = s.id; return s; }
 function snapshot() {
-  return { privacyStatus:privacy?.state(), preferences, modes, modeId, requesting, capturing, captureStartedAt, permissions:{microphone:systemPreferences.getMediaAccessStatus('microphone'),screen:systemPreferences.getMediaAccessStatus('screen')}, compact, status, connected, busy, audioBusy, listening, audioStatus, pendingAudio: audio?.pending.size || 0, problem, selectedModel, selectedEffort, selectedServiceTier, models, microphone, audioPid, attachments: (active()?.attachments || []).map(({id,preview,name})=>({id,preview,name})), session: active(), sessions: sessions.map(({ id, title, createdAt, notes, transcript, messages }) => ({ id, title, createdAt, hasNotes:!!notes, searchText:[title,notes,...transcript.map(t=>t.text),...messages.map(m=>m.text)].join(' ').toLowerCase() })) };
+  return { selectedProvider, providers:PROVIDERS, connecting:!!connecting, privacyStatus:privacy?.state(), preferences, modes, modeId, requesting, capturing, captureStartedAt, permissions:{microphone:systemPreferences.getMediaAccessStatus('microphone'),screen:systemPreferences.getMediaAccessStatus('screen')}, compact, status, connected, busy, audioBusy, listening, audioStatus, pendingAudio: audio?.pending.size || 0, problem, selectedModel, selectedEffort, selectedServiceTier, models, microphone, audioPid, attachments: (active()?.attachments || []).map(({id,preview,name})=>({id,preview,name})), session: active(), sessions: sessions.map(({ id, title, createdAt, notes, transcript, messages }) => ({ id, title, createdAt, hasNotes:!!notes, searchText:[title,notes,...transcript.map(t=>t.text),...messages.map(m=>m.text)].join(' ').toLowerCase() })) };
 }
 function update() {
   if (renderTimer) return;
@@ -51,7 +56,8 @@ function save() {
 }
 let writeChain = Promise.resolve();
 function writeState() {
-  const content = JSON.stringify({ sessions, selectedModel, selectedEffort, selectedServiceTier, microphone, audioPid, preferences, modes, modeId });
+  providerSelections[selectedProvider] = { selectedModel, selectedEffort, selectedServiceTier };
+  const content = JSON.stringify({ sessions, selectedProvider, providerSelections, selectedModel, selectedEffort, selectedServiceTier, microphone, audioPid, preferences, modes, modeId });
   writeChain = writeChain.then(async () => { const tmp = path.join(dataDir, 'history.tmp'); await fs.writeFile(tmp, content, { mode: 0o600 }); await fs.rename(tmp, path.join(dataDir, 'history.json')); }).catch(e => report(`Could not save history: ${e.message}`));
   return writeChain;
 }
@@ -76,15 +82,15 @@ async function connect() {
   if (connecting) return connecting;
   if (busy) throw new Error('Stop the current answer before reconnecting.');
   connecting = (async () => {
-    problem = ''; status = 'Connecting to Codex…'; connected = false; update();
+    problem = ''; status = `Connecting to ${backendName()}…`; connected = false; connectionAuth='';models = []; update();
     try {
-      const result = await codex.connect(); models = result.models;
+      const result = await codex.connect(selectedProvider); models = result.models;
       if (!models.some(m => m.model === selectedModel)) selectedModel = models.find(m => m.isDefault)?.model || models[0]?.model;
       const model = models.find(m => m.model === selectedModel);
       selectedServiceTier=normalizeServiceTier(model,selectedServiceTier);
       if (!model?.supportedReasoningEfforts?.some(e => e.reasoningEffort === selectedEffort)) selectedEffort = model?.defaultReasoningEffort || 'low';
-      connected = true; status = 'Codex connected'; save();
-    } catch (e) { status = 'Codex disconnected'; report(e.message); }
+      connected = true;connectionAuth=result.auth || '';status = connectionStatus(); save();
+    } catch (e) { status = `${backendName()} disconnected`; report(e.message); }
     finally { connecting = null; update(); }
   })();
   return connecting;
@@ -121,7 +127,7 @@ async function ask(input = {}) {
   const s=active(), retry=request.retry?s.lastPreparedRequest:null;
   const kind=retry?.kind || request.kind || 'assist';
   if(!Object.hasOwn(ACTIONS,kind)) throw new Error('Unknown answer action.');
-  if(!connected) throw new Error('Connect to Codex first.');
+  if(!connected) throw new Error(`Connect to ${backendName()} first.`);
   if(busy || requesting || capturing) throw new Error('Stop the current answer or wait for capture before sending.');
   requesting=true;problem='';update();
   try {
@@ -134,21 +140,24 @@ async function ask(input = {}) {
       const images=kind==='latest' || ['notes','recap','email'].includes(kind)?[]:[...(s.attachments||[])];
       const built=buildRequest({...request,kind,session:s,mode:currentMode(),preferences,hasImage:images.length>0});
       if(!built.prompt.trim() && !images.length) throw new Error('Type a message, attach images or use Listen to add new speech.');
-      prepared={...built,kind,images};
+      prepared={...built,kind,images,historyEnd:s.messages.length};
     }
     const model=models.find(m=>m.model===selectedModel);
     if(prepared.images.length && model?.inputModalities && !model.inputModalities.includes('image')) throw new Error('Choose an image-capable model.');
+    const routed=routeRequest(s,selectedProvider,prepared);
     busy=true;setCompact(false);showWindow();win.webContents.send('navigate','chat');s.modeId=modeId;
     if(!s.messages.length && s.title==='New conversation') s.title=prepared.label.slice(0,65);
     s.messages.push({role:'user',text:prepared.label,images:prepared.images,context:prepared.context,prompt:prepared.prompt});
-    const answer={role:'assistant',text:'',state:'working',kind};s.messages.push(answer);s.currentAnswer=s.messages.length-1;
+    const answer={role:'assistant',text:'',state:'working',kind,provider:selectedProvider,model:selectedModel};s.messages.push(answer);s.currentAnswer=s.messages.length-1;
     s.lastPreparedRequest=prepared;update();save();
     try {
-      await codex.ask({threadId:s.threadId,text:prepared.prompt,images:prepared.images.map(i=>i.path),model:selectedModel,serviceTier:selectedServiceTier,effort:preferences.smart?smartEffort(model):selectedEffort,smart:preferences.smart,instructions:prepared.instructions});
+      const result=await codex.ask({...routed,model:selectedModel,serviceTier:selectedServiceTier,effort:preferences.smart?smartEffort(model):selectedEffort,smart:preferences.smart,instructions:prepared.instructions});
+      const route=routeState(s,selectedProvider);route.through=s.messages.length;
+      if(result?.threadId) {route.threadId=result.threadId;if(selectedProvider==='codex')s.threadId=result.threadId;}
       const sent=new Set(prepared.images.map(i=>i.id));s.attachments=(s.attachments||[]).filter(i=>!sent.has(i.id));
       s.sentTranscriptKeys=[...new Set([...(s.sentTranscriptKeys||[]),...prepared.transcriptKeys])];
     } catch(e) {busy=false;answer.state='failed';answer.error=e.message;throw e;}
-  } finally {requesting=false;status=connected?'Codex connected':'Codex disconnected';update();save();}
+  } finally {requesting=false;status=connectionStatus();update();save();}
 }
 function normalizeServiceTier(model,tier) {return model?.serviceTiers?.some(t=>t.id===tier)?tier:'default';}
 function smartEffort(model) { const available=model?.supportedReasoningEfforts?.map(e=>e.reasoningEffort)||[]; return available.includes('high')?'high':selectedEffort; }
@@ -174,19 +183,19 @@ function move(dx,dy) {const b=win.getBounds(),area=screen.getDisplayMatching(b).
 function bindEvents() {
   codex.on('diagnostic', text => { void fs.writeFile(path.join(dataDir, 'connection-diagnostic.log'), text, { mode: 0o600 }); });
   codex.on('cancelError', report);
-  codex.on('thread', id => { const s=active();s.threadId=id; save(); });
+  codex.on('thread', id => { const s=active();routeState(s,selectedProvider).threadId=id;if(selectedProvider==='codex')s.threadId=id; save(); });
   codex.on('delta', text => { const s = active(); const a = s.messages[s.currentAnswer]; if (a) { a.text += text; update(); } });
   codex.on('message', item => { const s = active(); const a = s.messages[s.currentAnswer]; if (a && !a.text) a.text = item.text || ''; update(); });
   codex.on('completed', turn => {
     busy = false;
     const s = active(); const a = s.messages[s.currentAnswer];
-    if (a) { a.state = turn?.status || 'failed'; if (turn?.error) a.error = turn.error.message || 'Codex could not complete this answer.'; }
+    if (a) { a.state = turn?.status || 'failed'; if (turn?.error) a.error = turn.error.message || `${backendName()} could not complete this answer.`; }
     if (a?.kind === 'notes' && turn?.status === 'completed') { s.notes=a.text; s.notesAt=Date.now(); win.webContents.send('navigate','notes'); }
-    if (turn?.status === 'failed') report(a?.error || 'Codex could not complete this answer.');
+    if (turn?.status === 'failed') report(a?.error || `${backendName()} could not complete this answer.`);
     update(); save();
   });
   codex.on('disconnected', message => {
-    connected = false; status = 'Codex disconnected';
+    connected = false; status = `${backendName()} disconnected`;
     if (busy) { busy = false; const s = active(); const a = s?.messages[s.currentAnswer]; if (a) { a.state = 'failed'; a.error = message; } save(); }
     update();
   });
@@ -211,6 +220,29 @@ async function action(name, payload) {
       preferences.contentProtection = !preferences.contentProtection;
       privacy?.apply(preferences);updateTray();save();update();break;
     case 'connect': await connect(); break;
+    case 'choose-provider': {
+      const enabled=!busy && !requesting && !connecting;
+      Menu.buildFromTemplate(PROVIDERS.map(p=>({label:p.name,type:'radio',checked:selectedProvider===p.id,enabled,click:()=>void action('provider',p.id).catch(e=>report(e.message))}))).popup({window:win});break;
+    }
+    case 'provider': {
+      if(busy || requesting || connecting) throw new Error('Wait for the current answer or connection before switching providers.');
+      if(!PROVIDERS.some(p=>p.id===payload)) throw new Error('Unknown answer provider.');
+      if(payload===selectedProvider) {if(!connected)await connect();break;}
+      providerSelections[selectedProvider]={selectedModel,selectedEffort,selectedServiceTier};
+      selectedProvider=payload;
+      ({selectedModel='',selectedEffort='low',selectedServiceTier='default'}=providerSelections[payload] || {});
+      models=[];connected=false;save();update();await connect();break;
+    }
+    case 'claude-setup': {
+      await shell.openExternal('https://code.claude.com/docs/en/quickstart');break;
+    }
+    case 'claude-login': {
+      const command=findClaude();
+      const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+      const script=path.join(dataDir,'claude-login.command');
+      await fs.writeFile(script,`#!/bin/zsh\nexec ${quote(command)} auth login\n`,{mode:0o700});
+      await runFile('/usr/bin/open',['-a','Terminal',script]);break;
+    }
     case 'ask': await ask(payload); break;
     case 'more': {
       const navigate=view=>win.webContents.send('navigate',view);
@@ -234,14 +266,14 @@ async function action(name, payload) {
     }
     case 'choose-model': {
       if(busy || requesting) throw new Error('Wait for the answer before changing models.');
-      if(!models.length) throw new Error('Connect to Codex to load your models.');
+      if(!models.length) throw new Error(`Connect to ${backendName()} to load your models.`);
       const model=models.find(m=>m.model===selectedModel);
       const choose=payload=>void action('answer-model',payload).catch(e=>report(e.message));
       Menu.buildFromTemplate([
         ...models.map(m=>({label:m.displayName || m.model,type:'radio',checked:m.model===selectedModel,click:()=>choose({model:m.model})})),
         {type:'separator'},
         {label:'Answer speed',submenu:[{label:'Standard',type:'radio',checked:selectedServiceTier==='default',click:()=>choose({serviceTier:'default'})},...(model?.serviceTiers||[]).filter(t=>t.id!=='default').map(t=>({label:`${t.name} · ${t.description || 'Faster answers'}${/usage/i.test(t.description||'')?'':' · increased usage'}`,type:'radio',checked:selectedServiceTier===t.id,click:()=>choose({serviceTier:t.id})}))]},
-        {label:'Reasoning effort',submenu:(model?.supportedReasoningEfforts || []).map(e=>({label:e.reasoningEffort,type:'radio',checked:e.reasoningEffort===selectedEffort,click:()=>choose({effort:e.reasoningEffort})}))},
+        ...(model?.supportedReasoningEfforts?.length?[{label:'Reasoning effort',submenu:model.supportedReasoningEfforts.map(e=>({label:e.reasoningEffort,type:'radio',checked:e.reasoningEffort===selectedEffort,click:()=>choose({effort:e.reasoningEffort})}))}]:[]),
       ]).popup({window:win});
       break;
     }
@@ -406,11 +438,12 @@ else {
           s.conversationVersion=2;delete s.transcriptThreadId;
         }
         s.attachments ||= [];s.sentTranscriptKeys ||= [];
-      } selectedModel = saved.selectedModel || ''; selectedEffort = saved.selectedEffort || 'low'; selectedServiceTier = saved.selectedServiceTier || 'default'; microphone = saved.microphone || '';
+      } selectedProvider=PROVIDERS.some(p=>p.id===saved.selectedProvider)?saved.selectedProvider:'codex';providerSelections=saved.providerSelections || {};
+      selectedModel = saved.selectedModel || ''; selectedEffort = saved.selectedEffort || 'low'; selectedServiceTier = saved.selectedServiceTier || 'default'; microphone = saved.microphone || '';
       for (const s of sessions) for (const m of s.messages) if (m.state === 'working') m.state = 'interrupted';
     } catch (e) { if (e.code !== 'ENOENT') problem = 'Could not load saved history. The existing file has been left in place.'; }
     if (!sessions.length) newSession(); else {activeId = sessions[0].id;modeId=active().modeId || modeId;}
-    codex = new CodexClient(path.join(dataDir, 'workspace'));
+    codex = new ProviderClient(path.join(dataDir, 'workspace'));
     audio = new AudioPipeline({ helper: captureBinary, python: path.join(project, '.venv/bin/python'), worker: path.join(root, 'scripts/transcribe.py'), directory: path.join(dataDir, 'audio-temp') });
     bindEvents();
     compact = active().messages.length === 0;
