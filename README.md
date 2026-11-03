@@ -11,8 +11,10 @@ This is a source release of a local prototype. It is inspired by Cluely's intera
 - **Listen → Send:** transcribe continuously and submit new speech on demand. Listening continues while an answer generates.
 - **Quick Assist:** explicitly capture and send a fresh screenshot with queued images, new speech and your message.
 - **Floating chat:** translucent panel, streamed Markdown and code, questions anchored near the top, screenshot previews and a jump-to-bottom button.
-- **Answer provider:** switch between Codex and Claude Code from the toolbar or Settings. Each provider keeps its own model settings and session; switching carries the chat's earlier messages and images to the newly selected provider. Requests never fall back silently to the other provider.
-- **Model and mode pickers:** choose the provider's model, reasoning effort and advertised answer-speed tier; customize interview, coding, behavioral and other modes with background and reference files.
+- **Answer provider:** switch between Codex and Claude Code from the toolbar or the Dashboard. Each provider keeps its own model settings and session; switching carries the chat's earlier messages and images to the newly selected provider. Requests never fall back silently to the other provider.
+- **Model and mode pickers:** choose the provider's model, reasoning effort and advertised answer-speed tier; pick interview, coding, online-assessment, behavioral and other modes, or Plain to send only what you type, say or show.
+- **Dashboard:** a separate window for setup: choose which saved context documents apply to the current chat, edit modes and reference files, browse history and change settings. It and the floating panel are never shown together.
+- **Transcribe screenshots:** optionally have the provider transcribe queued screenshots verbatim in a hidden request and send that text in their place.
 - **Local history:** save conversations, transcripts and notes; import text, PDF and DOCX context.
 - **Privacy mode:** requests window capture exclusion and hides the Dock/Mission Control entry. Protection depends on macOS and the capture application; it is not a universal invisibility guarantee.
 
@@ -55,27 +57,28 @@ The one-time signing setup creates a personal certificate in a dedicated local k
 
 | Action | Default shortcut |
 | --- | --- |
-| Send new speech, preserving draft and queued images | Control–Option–Enter |
+| Send message, queued images and new speech | Control–Option–Enter |
 | Queue a screenshot | Control–Option–' |
 | Quick Assist: capture screen and send | Control–Option–`\` |
 | Listen / Pause | Control–Option–L |
 | New chat | Control–Option–N |
+| Transcribe screenshots on / off | Control–Option–T |
 | Show / hide panel | Control–Option–Space |
 | Focus question input | Control–Option–P |
-| Move panel | Command–Arrow |
+| Move panel (hold to keep moving) | Command–Arrow |
 | Scroll answer | Control–Option–Shift–Up / Down |
 
-Screen shortcuts use physical key positions. On Canadian–CSA, the screen-only and combined keys are **è** and **à**. Shortcuts are editable in Advanced settings and may conflict with other applications.
+Screen shortcuts use physical key positions. On Canadian–CSA, the screen-only and combined keys are **è** and **à**. Shortcuts are editable in **Dashboard → Settings → Keyboard shortcuts** and may conflict with other applications.
 
-- Start **Listen** once. Enter sends your message, queued images and new speech. Control–Option–Enter sends only new speech, preserving the draft and queued images.
+- Start **Listen** once. Enter sends your message, queued images and new speech. Control–Option–Enter does the same as Send, including image-only messages, even when another app is focused.
 - Click **Screen** to queue a screenshot without submitting. Capture several views, add any text, then Send. The paperclip accepts multiple image files. Capturing temporarily hides the panel.
 - Choose **… → Quick Assist · screen + voice** or the combined shortcut to capture and send immediately. Automatic screen capture for typed messages is optional and initially off.
 - Click the square **Stop** button in the composer to interrupt thinking or generation. Click **Pause** to stop audio capture separately.
 - Click **Codex / Claude** beside Model to choose the answer provider. Wait for an active answer to finish before switching. Each completed answer shows which provider wrote it.
-- Open **Model** for model, effort and speed. Faster service tiers can consume more of your Codex allowance; the menu uses descriptions advertised by the provider. Claude offers the Sonnet, Opus and Haiku aliases at Standard speed; your account determines which can answer.
-- Open **Mode** to select or edit instructions, background and reference files.
+- Open **Model** for model, effort and speed. Faster service tiers can consume more of your Codex allowance; the menu uses descriptions advertised by the provider. Claude offers the Fable, Opus, Sonnet and Haiku aliases with low to max effort; the label shows the version the CLI reports. Fast mode is Opus-only and billed as extra usage on subscriptions; when Claude declines it, the app says so and the answer uses standard speed. Your account determines which models can answer.
+- Open **Mode** to select a mode or toggle **Transcribe screenshots**. Edit instructions, background and reference files in **Dashboard → Modes**, and tick the context documents for the current chat on **Dashboard → Start**.
 - Hover or focus each image label for its preview. Copy appears after the response finishes; Retry is in the small response menu.
-- **…** contains Transcript, History, Notes, Settings and New chat. The eye/incognito button toggles Privacy mode while leaving the panel visible.
+- **…** contains Quick Assist, Transcript, Notes, New chat and Dashboard. The menu-bar icon also opens the Dashboard. The eye/incognito button toggles Privacy mode while leaving the panel visible.
 
 
 New chat / Command–N leaves an already fresh chat in place, preserving its draft and queued images.
@@ -84,9 +87,9 @@ New chat / Command–N leaves an already fresh chat in place, preserving its dra
 
 Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to the selected answer provider. Switching providers sends earlier messages and images that provider has not yet seen with the next request. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
 
-The app starts its own `codex app-server --listen stdio://` process and uses existing Codex authentication. The Codex desktop app does not need to be open. `COMPANION_CODEX` can point to a specific CLI executable. The companion disables configured development MCP servers for its own threads and enables web search only when Smart research is on.
+The app starts its own `codex app-server --listen stdio://` process and uses existing Codex authentication. The Codex desktop app does not need to be open. `COMPANION_CODEX` can point to a specific CLI executable. The companion disables configured development MCP servers for its own threads and enables web search only when Smart research is on. Codex memories, skills, hooks, apps and project documents are also turned off for these threads, so interview chats stay small and never feed Codex memory.
 
-For Claude, choose **Settings → Answer provider → Claude**, click **Sign in to Claude…**, finish the login in Terminal, then click **Reconnect Claude**. The app runs `claude -p` with streaming JSON input and output and resumes its own Claude session on follow-up turns. It uses your normal Claude Code authentication; an API key set in the environment takes precedence and uses API billing, which the connection status shows. `COMPANION_CLAUDE` can point to a specific executable. Mode instructions go in the system prompt. Normal answers run without tools; Smart research enables only WebSearch and WebFetch. Configured MCP servers and settings are excluded. Claude Code limits piped input to 10 MB, so an oversized request reports an error and keeps unsent inputs. Check Anthropic's terms before using subscription login with third-party tools.
+For Claude, choose **Dashboard → Settings → Answer provider → Claude**, click **Sign in to Claude…**, finish the login in Terminal, then click **Reconnect Claude**. The app runs `claude -p` with streaming JSON input and output and resumes its own Claude session on follow-up turns. It uses your normal Claude Code authentication; an API key set in the environment takes precedence and uses API billing, which the connection status shows. `COMPANION_CLAUDE` can point to a specific executable. Mode instructions go in the system prompt. Normal answers run without tools; Smart research enables only WebSearch and WebFetch. Configured MCP servers and settings are excluded. Claude Code limits piped input to 10 MB, so an oversized request reports an error and keeps unsent inputs. Check Anthropic's terms before using subscription login with third-party tools.
 
 Application data lives in `~/Library/Application Support/Local Companion/`:
 
@@ -104,7 +107,7 @@ npm test                # Offline JS tests; macOS signing test uses the setup id
 npm run test:native     # Swift PCM/capture-buffer tests; macOS only
 ```
 
-The tests cover chat continuity, multiple-image queues, incremental speech, worker idle unloading and reloading, transcript flushing, cancellation transport, renderer behavior, audio readiness, Claude streaming/sign-in/cancellation handling, provider routing and persistent signing identity. They do not call models; Claude tests use a local fixture in place of the CLI. CI runs the portable tests on Linux, where the macOS signing test is skipped.
+The tests cover chat continuity, multiple-image queues, incremental speech, worker idle unloading and reloading, transcript flushing, cancellation transport, renderer behavior, audio readiness, Claude streaming/sign-in/cancellation handling, Claude model, effort and Fast-mode reporting, Transcribe mode, the Dashboard, provider routing and persistent signing identity. They do not call models; Claude tests use a local fixture in place of the CLI. CI runs the portable tests on Linux, where the macOS signing test is skipped.
 
 Live checks are separate and consume account usage:
 
@@ -129,6 +132,7 @@ The source is organized as follows:
 - `native/Capture.swift`: microphone capture, Core Audio taps and PCM conversion.
 - `src/prompts.cjs` and `src/interview-mode-prompts.json`: request context and editable modes.
 - `src/renderer.js`, `src/index.html`, `src/styles.css`: floating interface.
+- `src/dashboard.html`, `src/dashboard.js`, `src/dashboard.css`: Dashboard window for context, modes, history and settings.
 - `scripts/build.cjs`, `scripts/signing.cjs`: personal local build and stable signing.
 
 ## Limits

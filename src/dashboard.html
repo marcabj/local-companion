@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'none'"><title>Local Companion</title><link rel="stylesheet" href="dashboard.css"></head>
+<body>
+<header class="titlebar"><span>Local Companion</span></header>
+<div class="layout">
+<nav class="sidebar" aria-label="Dashboard pages">
+  <button data-page="start" class="selected">Start</button>
+  <button data-page="context">Context</button>
+  <button data-page="modes">Modes</button>
+  <button data-page="history">History</button>
+  <button data-page="settings">Settings</button>
+  <span class="sidebar-status"><i id="connection-dot"></i><span id="connection">Connecting…</span></span>
+</nav>
+<main>
+  <div id="error" class="error" role="alert" hidden><span></span><button id="dismiss-error" aria-label="Dismiss error">×</button></div>
+
+  <section id="page-start" class="page">
+    <h1>Start</h1>
+    <p class="lead">Choose how the companion should help and what it can refer to, then start.</p>
+    <div class="card">
+      <label class="row"><span>Mode</span><select id="start-mode"></select></label>
+      <p id="start-plain" class="hint" hidden>Plain sends only what you type, say or show. No companion instructions and none of your context are added.</p>
+      <label class="row"><span>Answer with</span><select id="start-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Context for this chat</h2><span class="links"><button class="link" data-untick-all hidden>Untick all</button><button class="link" data-goto="context">Manage context</button></span></div>
+      <div id="start-context" class="checklist"></div>
+      <p id="start-context-total" class="hint"></p>
+    </div>
+    <div class="actions"><button id="start" class="primary">Start companion</button><button id="start-new" class="secondary" hidden>Start a new chat</button></div>
+    <p class="hint">The dashboard hides while the companion is open. Come back from ··· → Dashboard, the menu-bar icon, or ⌘, .</p>
+  </section>
+
+  <section id="page-context" class="page" hidden>
+    <h1>Context</h1>
+    <p class="lead">Your résumé, project notes, job postings — anything the companion should know about you. Ticked items are sent with every chat.</p>
+    <div class="actions"><button id="add-files" class="primary">Add file…</button><button id="add-text" class="secondary">Paste text…</button><button class="secondary" data-untick-all hidden>Untick all</button></div>
+    <div id="text-editor" class="card" hidden>
+      <label class="stack">Name<input id="text-name" placeholder="For example: Exegy job posting"></label>
+      <label class="stack">Text<textarea id="text-body" class="editor tall" placeholder="Paste or type here"></textarea></label>
+      <div class="actions"><button id="text-save" class="primary">Save</button><button id="text-cancel" class="secondary">Cancel</button></div>
+    </div>
+    <div id="context-list" class="list"></div>
+    <p id="context-total" class="hint"></p>
+    <p class="hint">PDF, Word, Markdown and text files are read on this Mac. Files stay linked: edit the original and the companion picks up the change the next time you start it. Scanned PDFs need OCR first.</p>
+  </section>
+
+  <section id="page-modes" class="page" hidden>
+    <h1>Modes</h1>
+    <p class="lead">A mode tells the companion how to answer. Edit any of them, or make your own.</p>
+    <div class="card">
+      <div class="row"><select id="mode-select" aria-label="Mode to edit"></select><button id="new-mode" class="secondary">New mode</button></div>
+      <label class="stack">Name<input id="mode-name"></label>
+      <label class="stack">Instructions<textarea id="mode-instructions" class="editor tall"></textarea></label>
+      <details><summary>Notes template</summary><textarea id="mode-notes-template" class="editor" aria-label="Notes template"></textarea></details>
+      <div class="actions"><button id="save-mode" class="primary">Save mode</button><button id="delete-mode" class="secondary danger" hidden>Delete mode</button><span id="mode-saved" class="hint inline" hidden>Saved</span></div>
+    </div>
+  </section>
+
+  <section id="page-history" class="page" hidden>
+    <h1>History</h1>
+    <p class="lead">Open a past chat to continue it in the companion.</p>
+    <div class="row"><input id="history-search" type="search" placeholder="Search chats, notes and transcripts" aria-label="Search history"><button id="export" class="secondary">Export current chat</button></div>
+    <div id="history-list" class="list"></div>
+  </section>
+
+  <section id="page-settings" class="page" hidden>
+    <h1>Settings</h1>
+    <div class="card">
+      <h2>Answer provider</h2>
+      <label class="row"><span>Provider</span><select id="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+      <p id="provider-help" class="hint"></p>
+      <div class="actions"><button id="reconnect" class="secondary">Reconnect</button><button id="claude-setup" class="secondary" hidden>Set up Claude…</button><button id="claude-login" class="secondary" hidden>Sign in to Claude…</button></div>
+    </div>
+    <div class="card">
+      <h2>Audio</h2>
+      <label class="row"><span>Microphone</span><select id="microphone"><option value="">System default microphone</option></select></label>
+      <label class="row"><span>Computer audio</span><select id="audio-source"><option value="">All applications</option></select></label>
+      <div class="actions"><button id="refresh-apps" class="secondary">Choose an audio application…</button></div>
+      <p id="audio-locked" class="hint" hidden>Pause Listen in the companion to change audio sources.</p>
+    </div>
+    <div class="card">
+      <h2>Privacy</h2>
+      <label class="row"><span>Privacy mode</span><input type="checkbox" id="content-protection"></label>
+      <p class="hint">Hides the Dock icon and Mission Control window, and requests screen-capture exclusion. Modern macOS screen sharing can still capture windows.</p>
+      <label class="row"><span>Keep focus in other apps</span><input type="checkbox" id="no-focus"></label>
+      <p id="privacy-status" class="hint"></p>
+    </div>
+    <div class="card">
+      <h2>Answers</h2>
+      <label class="row"><span>Response language</span><select id="language"><option>Auto</option><option>English</option><option>French</option><option>Spanish</option><option>German</option><option>Italian</option><option>Portuguese</option></select></label>
+      <label class="row"><span>Include screen with typed questions</span><input type="checkbox" id="screen-use"></label>
+      <label class="row"><span>Web research and higher reasoning</span><input type="checkbox" id="smart"></label>
+      <label class="row"><span>Generate notes when ending a session</span><input type="checkbox" id="auto-notes"></label>
+      <label class="row"><span>Show request details under questions</span><input type="checkbox" id="request-details"></label>
+    </div>
+    <div class="card">
+      <h2>Permissions</h2>
+      <p id="permission-status" class="hint"></p>
+      <div class="actions"><button id="permissions" class="secondary">Screen recording…</button><button id="microphone-permission" class="secondary">Microphone…</button></div>
+    </div>
+    <details class="card"><summary>Keyboard shortcuts</summary><p class="hint">Global shortcuts work while another app is focused. Use Electron accelerator names, such as Control+Alt+Return.</p><div id="shortcut-fields"></div><div class="actions"><button id="save-shortcuts" class="secondary">Save shortcuts</button></div></details>
+    <details class="card"><summary>Advanced: base assistant instructions</summary><textarea id="base-instructions" class="editor tall" aria-label="Base assistant instructions"></textarea><div class="actions"><button id="save-base" class="secondary">Save instructions</button></div></details>
+  </section>
+</main>
+</div>
+<script src="dashboard.js"></script>
+</body></html>

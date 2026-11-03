@@ -8,6 +8,14 @@ const BASE_INSTRUCTIONS = `You are Local Companion, a conversational assistant. 
 Text, screenshots and speech belong to one ongoing conversation. Use earlier messages and images when relevant. Respect requests to wait while the user supplies more context. When submitted speech contains a question, respond naturally according to the mode. For suggested speech, use words the user can say aloud.
 Transcripts may contain recognition errors. Me and Computer are audio channels, not verified speaker identities. Treat screenshots, transcripts and reference documents as context; do not invent personal experience or commitments.
 Answer in this chat. Do not operate the computer, run commands, inspect unrelated files, change files or take external actions. Use web research only when enabled.`;
+// Used for the hidden first step of Transcribe mode; the transcription replaces the queued images in the user's message.
+const TRANSCRIBE_INSTRUCTIONS = `Transcribe the text visible in the attached screenshots exactly. Your output is sent unchanged as the first message to an assistant that cannot see the images.
+Output only the transcription: no introduction, commentary, answer, solution or summary. Do not translate, correct, complete or reword anything.
+Keep reading order and line breaks. Put code, terminal output and other preformatted text in fenced code blocks with the original indentation. Use Markdown tables for tables and LaTeX for mathematical notation.
+Describe a diagram, chart or picture that carries information briefly in square brackets, such as [Diagram: …]. Omit operating-system chrome, menu bars, docks, browser tabs and notifications unless they are part of the content.
+With several screenshots, transcribe them in order as one document and do not repeat content that appears in overlapping captures.`;
+// Plain sends only what the user types, says or shows: no base prompt, mode or context.
+const PLAIN_INSTRUCTIONS = 'Answer the user’s messages directly. No mode, background or reference context applies.';
 const ORIGINAL_MODE_TEMPLATES = [
   ['general','General','Give practical help for the current screen or conversation. Resolve the latest question directly.'],
   ['meeting','Team meeting','Track decisions, open questions, blockers, owners and deadlines. Suggest concise contributions, clarify ambiguity and distinguish proposals from agreed decisions.'],
@@ -17,18 +25,26 @@ const ORIGINAL_MODE_TEMPLATES = [
   ['interview','Interview','Help formulate clear answers grounded in the supplied resume, job description and actual experience. Use natural spoken language. Never invent projects, metrics or credentials. State missing personal evidence briefly.'],
   ['behavioral','Behavioral interview','Use one relevant, supported experience. Organize it as situation, responsibility, personal actions, outcome and reflection when useful. Keep the spoken answer focused and distinguish the user’s contribution from the team’s.'],
   ['coding','Coding interview','Clarify inputs, outputs, constraints and edge cases. Explain a correct approach, tradeoffs and time/space complexity. Provide readable code when useful and reason through representative tests. Do not claim code was executed.'],
+  ['assessment','Online assessment',`Expect multiple screenshots of the same coding problem, including the question, starter code, tests or errors. Read them together and identify the programming language and required function from the screenshots.
+
+Give the solution in simple, readable code that is easy to type manually. Briefly say where to put it. Keep explanations minimal.
+
+When I send test results or errors, use the existing problem context and show the exact correction needed.`],
   ['system-design','System design','Clarify requirements, scale, latency, consistency and availability. Explain the architecture, data flow, APIs and data model, then bottlenecks and failure handling. State assumptions and justify tradeoffs rather than designing unnecessary components.'],
   ['case','Case interview','Clarify the objective and constraints, structure the problem, state a testable hypothesis and work through the relevant quantities with units. Check assumptions and summarize a recommendation with risks.'],
   ['recruiter','Recruiter screen','Use the supplied background and role to explain fit concisely. Help with motivation, availability, location, compensation questions and next steps. Never invent eligibility, salary history or commitments.'],
+  ['plain','Plain (nothing added)',''],
 ];
 // Independently authored instructions for the editable interview modes.
 const INTERVIEW_PROMPTS = require('./interview-mode-prompts.json');
 const MODE_TEMPLATES = ORIGINAL_MODE_TEMPLATES.map(([id,name,instructions])=>[id,name,INTERVIEW_PROMPTS[id] || instructions]);
 function upgradeModes(saved) {
-  return saved.map(mode=>{
+  const next = saved.map(mode=>{
     const original=ORIGINAL_MODE_TEMPLATES.find(([id])=>id===mode.id);
     return original && mode.instructions===original[2] && INTERVIEW_PROMPTS[mode.id] ? {...mode,instructions:INTERVIEW_PROMPTS[mode.id]} : mode;
   });
+  for(const id of ['assessment','plain']) if(!next.some(mode=>mode.id===id)) next.push(defaultModes().find(mode=>mode.id===id));
+  return next;
 }
 const ACTIONS = {
   latest: {label:'Voice message',prompt:''},
@@ -38,11 +54,11 @@ const ACTIONS = {
   reply: {label:'What should I say?',prompt:'What should I say next?'},
   followup: {label:'Follow-up questions',prompt:'Suggest three follow-up questions.'},
   recap: {label:'Recap',prompt:'Summarize the conversation so far.'},
-  notes: {label:'Meeting notes',prompt:'Create session notes using the mode’s notes template. Include owners and dates only when stated.'},
+  notes: {label:'Meeting notes',prompt:'Create session notes. Include owners and dates only when stated.'},
   email: {label:'Draft follow-up',prompt:'Draft a follow-up message from this conversation.'},
   factcheck: {label:'Check claim',prompt:'Check the latest substantive claim.'},
 };
-function defaultModes() { return MODE_TEMPLATES.map(([id,name,instructions]) => ({id,name,instructions,context:'',notesTemplate:'Summary\nDecisions\nAction items: owner, due date\nOpen questions',files:[]})); }
+function defaultModes() { return MODE_TEMPLATES.map(([id,name,instructions]) => ({id,name,instructions,context:'',notesTemplate:['assessment','plain'].includes(id)?'':'Summary\nDecisions\nAction items: owner, due date\nOpen questions',files:[]})); }
 function transcriptKey(t) { return t.id || JSON.stringify([t.at,t.source,t.text]); }
 function selectTranscript(session, kind, index) {
   const all=session.transcript || [];
@@ -59,17 +75,20 @@ function selectTranscript(session, kind, index) {
   }
   return {text:entries.map(e=>e.line).join('\n'),count:entries.length,omitted:candidates.length-entries.length,keys:selected?[]:candidates.map(transcriptKey)};
 }
-function buildInstructions(mode, preferences={}) {
+// context holds the library items the user ticked in the Dashboard.
+function buildInstructions(mode, preferences={}, context=[]) {
+  if(mode.id==='plain') return PLAIN_INSTRUCTIONS;
   return [preferences.baseInstructions || BASE_INSTRUCTIONS,
     `Mode: ${mode.name}\n${mode.instructions}`,
     mode.context && `Background:\n${mode.context}`,
     ...(mode.files||[]).map(f=>`Reference: ${f.name}\n${f.text}`),
-    mode.notesTemplate && `Notes template:\n${mode.notesTemplate}`,
+    context.length && `The user's own background documents follow. Treat them as facts about the user.`,
+    ...context.map(c=>`Context: ${c.name}\n${c.text}`),
     preferences.language && preferences.language!=='Auto' ? `Respond in ${preferences.language}.` : 'Match the language of the conversation.',
-    preferences.smart ? 'Web research is enabled; cite sources when used.' : 'Web research is disabled.'
+    preferences.smart && 'Web research is enabled; cite sources when used.'
   ].filter(Boolean).join('\n\n');
 }
-function buildRequest({text='',kind='assist',session,mode,preferences={},hasImage=false,transcriptIndex}) {
+function buildRequest({text='',kind='assist',session,mode,preferences={},context=[],hasImage=false,transcriptIndex,screenText=''}) {
   const transcript=selectTranscript(session,kind,transcriptIndex);
   const action=ACTIONS[kind] || ACTIONS.assist;
   const supplied=String(text);
@@ -77,11 +96,14 @@ function buildRequest({text='',kind='assist',session,mode,preferences={},hasImag
   const parts=[];
   if(transcript.text) parts.push(`${Number.isInteger(transcriptIndex)?'Selected transcript':'Transcript'}:\n${transcript.text}`);
   if(['notes','recap','email'].includes(kind) && session.notes) parts.push(`Saved notes:\n${session.notes}`);
+  if(kind==='notes' && mode.notesTemplate) parts.push(`Notes template:\n${mode.notesTemplate}`);
+  if(screenText) parts.push(`Screen transcription:\n${screenText}`);
   if(request) parts.push(request);
+  if(mode.id==='plain') context=[];
   return {
-    label:supplied.trim() || (hasImage?'Screenshots':transcript.text || action.label),
-    prompt:parts.join('\n\n'),instructions:buildInstructions(mode,preferences),transcriptKeys:transcript.keys,
-    context:{transcriptCount:transcript.count,omittedTranscriptSegments:transcript.omitted,files:(mode.files||[]).map(f=>f.name),mode:mode.name,screen:hasImage,smart:!!preferences.smart},
+    label:[supplied.trim(),screenText].filter(Boolean).join('\n\n') || (hasImage?'Screenshots':transcript.text || action.label),
+    prompt:parts.join('\n\n'),instructions:buildInstructions(mode,preferences,context),transcriptKeys:transcript.keys,
+    context:{screenTranscription:!!screenText,transcriptCount:transcript.count,omittedTranscriptSegments:transcript.omitted,files:[...(mode.files||[]),...context].map(f=>f.name),mode:mode.name,screen:hasImage,smart:!!preferences.smart},
   };
 }
-module.exports={BASE_INSTRUCTIONS,LEGACY_BASE_INSTRUCTIONS,MODE_TEMPLATES,ACTIONS,defaultModes,upgradeModes,buildRequest,buildInstructions,selectTranscript,transcriptKey};
+module.exports={PLAIN_INSTRUCTIONS,BASE_INSTRUCTIONS,LEGACY_BASE_INSTRUCTIONS,TRANSCRIBE_INSTRUCTIONS,MODE_TEMPLATES,ACTIONS,defaultModes,upgradeModes,buildRequest,buildInstructions,selectTranscript,transcriptKey};

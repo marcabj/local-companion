@@ -9,7 +9,7 @@ class ProviderClient extends EventEmitter {
   constructor(cwd, clients = { codex: new CodexClient(cwd), claude: new ClaudeClient(cwd) }) {
     super(); this.clients = clients; this.provider = 'codex';
     for (const [provider, client] of Object.entries(clients)) {
-      for (const event of ['thread', 'delta', 'message', 'completed', 'disconnected', 'diagnostic', 'cancelError']) {
+      for (const event of ['thread', 'delta', 'message', 'completed', 'disconnected', 'diagnostic', 'cancelError', 'notice']) {
         client.on(event, (...args) => { if (this.provider === provider) this.emit(event, ...args); });
       }
     }

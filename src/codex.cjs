@@ -81,7 +81,17 @@ class CodexClient extends EventEmitter {
     const { config } = await rpc.request('config/read', { includeLayers: false });
     // The companion supplies its own screen/audio context and does not need the
     // user's development MCP servers (some require a parent Codex app session).
-    this.threadConfig = { mcp_servers: Object.fromEntries(Object.keys(config.mcp_servers || {}).map(name => [name, { enabled: false }])) };
+    // Coding-session extras (memory summary, skills, plugins, hook output,
+    // collaboration modes) otherwise add ~40k characters to every thread, and
+    // interview chats must not feed Codex memory.
+    this.threadConfig = {
+      mcp_servers: Object.fromEntries(Object.keys(config.mcp_servers || {}).map(name => [name, { enabled: false }])),
+      features: { memories: false, hooks: false, apps: false, collaboration_modes: false },
+      memories: { use_memories: false, generate_memories: false },
+      skills: { include_instructions: false },
+      include_apps_instructions: false, include_permissions_instructions: false, include_environment_context: false, include_collaboration_mode_instructions: false,
+      project_doc_max_bytes: 0,
+    };
     const models = await rpc.request('model/list', {});
     return { models: models.data, auth: account.account?.type || 'configured provider' };
   }

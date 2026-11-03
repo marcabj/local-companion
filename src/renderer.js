@@ -1,18 +1,12 @@
 const $ = id => document.getElementById(id);
-let modeEditorId = null;
 function saveDraft() { window.companion.saveDraft?.($('question').value); }
 document.addEventListener('input',event=>{if(event.target.id==='question')saveDraft();});
-let state, currentView = 'chat', settingsOpen = false, messagesKey = '', transcriptKey = '', historyKey = '';
+let state, currentView = 'chat', messagesKey = '', transcriptKey = '';
 let displayedSession, latestTurnKey = '', pendingTurnAnchor = false;
 const escape = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const markdown = text => DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['img', 'iframe', 'style', 'form', 'input'] });
 async function act(name, value) { return window.companion.action(name, value); }
-function showView(name) { $('view-nav').hidden=name==='chat';$('view-title').textContent=({transcript:'Transcript',notes:'Notes',history:'History',modes:'Modes'})[name]||''; if(currentView!==name) $('content').scrollTop=0; currentView = name; act('view',name);document.body.classList.toggle('management-view',['modes','history'].includes(name)); document.body.classList.toggle('history-view', name === 'history' && !state?.compact); for (const el of document.querySelectorAll('.view')) el.hidden = el.id !== name; for (const el of document.querySelectorAll('[data-view]')) el.classList.toggle('selected', el.dataset.view === name); hideScreenPreview(); if(name==='chat')followLatestMessage(); else updateMessageScroll(); }
-function setOptions(select, entries, selected) {
-  const signature = JSON.stringify(entries);
-  if (select.dataset.options !== signature) { select.innerHTML = entries.map(([value, label]) => `<option value="${escape(value)}">${escape(label)}</option>`).join(''); select.dataset.options = signature; }
-  select.value = selected;
-}
+function showView(name) { $('view-nav').hidden=name==='chat';$('view-title').textContent=({transcript:'Transcript',notes:'Notes'})[name]||''; if(currentView!==name) $('content').scrollTop=0; currentView = name; act('view',name); for (const el of document.querySelectorAll('.view')) el.hidden = el.id !== name; for (const el of document.querySelectorAll('[data-view]')) el.classList.toggle('selected', el.dataset.view === name); hideScreenPreview(); if(name==='chat')followLatestMessage(); else updateMessageScroll(); }
 function renderPrivacyToggle(enabled) {
   const button = $('privacy-toggle');
   const label = enabled ? 'Privacy mode on · Click to disable' : 'Privacy mode off · Click to enable';
@@ -26,33 +20,25 @@ function render(s) {
   if(s.session?.id && s.session.id!==state?.session?.id) $('question').value=s.session.draft||'';
   state = s;
   renderPrivacyToggle(!!s.preferences.contentProtection);
-  if(settingsOpen){$('content-protection').checked=!!s.preferences.contentProtection;$('no-focus').checked=!!s.preferences.noFocusWhenPrivate;renderPrivacyStatus();}
   document.body.classList.toggle('compact', s.compact);
-  document.body.classList.toggle('history-view', !s.compact && currentView === 'history' && !settingsOpen);
   $('connection').textContent = s.status; $('connection-dot').classList.toggle('ready', s.connected);
   const provider=s.selectedProvider==='claude'?'Claude':'Codex';
   $('provider-label').textContent=provider;
   $('provider-toggle').title=`Route answers to ${provider} · Choose provider`;
   $('provider-toggle').setAttribute('aria-label',`Answer provider: ${provider}. Choose provider`);
   $('provider-toggle').disabled=s.busy || s.requesting || s.connecting;
-  $('provider').value=s.selectedProvider || 'codex';
-  $('provider').disabled=s.busy || s.requesting || s.connecting;
-  $('provider-help').textContent=s.selectedProvider==='claude'?'Uses Claude Code on this Mac. Sign in below, finish in Terminal, then reconnect. Model aliases follow Claude defaults; availability depends on your account. Switching providers shares this chat’s earlier messages and images with the selected provider.':'Uses your signed-in Codex CLI. Switching providers shares this chat’s earlier messages and images with the selected provider.';
-  $('claude-setup').hidden=s.selectedProvider!=='claude';
-  $('claude-login').hidden=s.selectedProvider!=='claude';
-  $('reconnect').textContent=`Reconnect ${provider}`;
-  $('reconnect').disabled=s.busy || s.requesting || s.connecting;
   $('audio-status').textContent = s.audioStatus; $('error').hidden = !s.problem; $('error').querySelector('span').textContent = s.problem;
-  $('model-label').textContent = s.selectedModel; $('model-toggle').title='Choose model · '+(s.models.find(m=>m.model===s.selectedModel)?.displayName || s.selectedModel || 'Connecting…')+' · '+s.selectedEffort+' · '+(s.models.find(m=>m.model===s.selectedModel)?.serviceTiers?.find(t=>t.id===s.selectedServiceTier)?.name || 'Standard'); $('model-toggle').disabled=s.busy || s.requesting || !s.models.length; $('send').hidden = s.busy; $('stop').hidden = !s.busy;
-  $('send').disabled = !s.connected || s.requesting || s.capturing; $('send').title = 'Send message, attached images and new speech';
+  $('model-toggle').title='Choose model · '+(s.models.find(m=>m.model===s.selectedModel)?.displayName || s.selectedModel || 'Connecting…')+' · '+s.selectedEffort+' · '+(s.models.find(m=>m.model===s.selectedModel)?.serviceTiers?.find(t=>t.id===s.selectedServiceTier)?.name || 'Standard'); $('model-toggle').disabled=s.busy || s.requesting || !s.models.length; $('send').hidden = s.busy; $('stop').hidden = !s.busy;
+  $('send').disabled = !s.connected || s.requesting || s.capturing; $('send').title = 'Send message, attached images and new speech'+(s.preferences.shortcuts?.assist?' · '+s.preferences.shortcuts.assist.replaceAll('Alt','Option').replaceAll('+','–'):'');
   $('screen').disabled=s.requesting || s.capturing;
+  $('question').placeholder=s.transcribing?'Transcribing screenshots…':s.preferences.transcribeMode?'Transcribe mode · queued screenshots are sent as text':'Message, attach screenshots, or send new speech';
   const screenShortcut=s.preferences.shortcuts?.screenshot;
   $('screen').title='Attach screenshot'+(screenShortcut?' · '+screenShortcut.replaceAll('Alt','Option').replaceAll('+','–')+(screenShortcut==="Control+Alt+'"?' (è on Canadian–CSA)':''):'');
-  $('active-mode').textContent=s.modes?.find(m=>m.id===s.modeId)?.name || 'General';
+  $('active-mode').textContent=(s.modes?.find(m=>m.id===s.modeId)?.name || 'General')+(s.preferences.transcribeMode?' · Transcribe':'');
   $('end-session').disabled=s.busy||s.requesting||s.audioBusy||(!s.listening&&!s.session.transcript.length);
   for(const button of document.querySelectorAll('[data-action]')) button.disabled=s.busy||s.requesting||!s.connected;
   $('mode-toggle').disabled=s.busy || s.requesting;
-  renderModes(s); renderNotes(s);
+  renderNotes(s);
    $('image').disabled = s.requesting || s.capturing;
   $('listen').disabled = s.audioBusy; $('listen').classList.toggle('active', s.listening);
   $('listen').classList.toggle('loading', s.audioBusy);
@@ -64,10 +50,6 @@ function render(s) {
   $('transcript-empty-hint').textContent = s.audioBusy ? 'Loading Parakeet and opening your audio inputs.' : 'Play a video or speak. Words appear here after a short pause.';
   updateCaptureStatus();
   renderAttachments(s.attachments || []);
-  setOptions($('model'), s.models.map(m => [m.model, m.displayName || m.model]), s.selectedModel);
-  const model = s.models.find(m => m.model === $('model').value);
-  setOptions($('effort'), (model?.supportedReasoningEfforts || []).map(e => [e.reasoningEffort, e.reasoningEffort[0].toUpperCase() + e.reasoningEffort.slice(1)]), s.selectedEffort);
-  for (const id of ['model', 'effort', 'microphone', 'audio-source']) $(id).disabled = s.busy || s.listening || s.audioBusy;
   $('transcript-count').textContent = s.session.transcript.length || '';
   renderMessages(s);
   if (expanding) followLatestMessage();
@@ -80,8 +62,6 @@ function render(s) {
     transcriptKey = tk;
     if (nearBottom && currentView === 'transcript') $('content').scrollTop = $('content').scrollHeight;
   }
-  const hk = JSON.stringify([s.sessions, s.session.id,$('history-search').value]);
-  if (hk !== historyKey) { $('history-list').innerHTML = s.sessions.filter(v=>!$('history-search').value || v.searchText?.includes($('history-search').value.toLowerCase()) || v.title.toLowerCase().includes($('history-search').value.toLowerCase())).map(v => `<button class="history-row ${v.id === s.session.id ? 'current' : ''}" data-session="${v.id}"><span>${escape(v.title)}</span><small>${new Date(v.createdAt).toLocaleString()}</small></button>`).join(''); historyKey = hk; }
 }
 function renderAttachments(images) {
   const container=$('attachment');container.hidden=!images.length;
@@ -97,17 +77,20 @@ function followLatestMessage() {
   if(typeof requestAnimationFrame === 'function') requestAnimationFrame(layoutLatestTurn);
 }
 function layoutLatestTurn() {
-  if(currentView !== 'chat' || settingsOpen || state?.compact) { updateMessageScroll(); return; }
+  if(currentView !== 'chat' || state?.compact) { updateMessageScroll(); return; }
   const content = $('content'), messages = $('messages');
   const answer = messages.lastElementChild;
   const question = answer?.previousElementSibling?.classList.contains('user') ? answer.previousElementSibling : null;
+  // A long question (often a voice transcript) keeps only its last lines in view so the answer starts on screen.
+  const questionHeight = question?.offsetHeight || 0, peek = Math.min(questionHeight, Math.round(content.clientHeight / 4));
   if(answer?.classList.contains('assistant')) {
     // Reserve a viewport for the latest turn so even a short answer leaves its question at the top.
-    answer.style.minHeight = `${Math.max(0, content.clientHeight - (question?.offsetHeight || 0) - 18)}px`;
+    answer.style.minHeight = `${Math.max(0, content.clientHeight - peek - 18)}px`;
   }
   if(pendingTurnAnchor && content.clientHeight > 0) {
-    const anchor = question || answer;
-    if(anchor) content.scrollTop += anchor.getBoundingClientRect().top - content.getBoundingClientRect().top - 6;
+    const anchor = question && questionHeight <= peek ? question : answer;
+    const offset = anchor === answer ? peek : 0;
+    if(anchor) content.scrollTop += anchor.getBoundingClientRect().top - content.getBoundingClientRect().top - 6 - offset;
     else content.scrollTop = 0;
     pendingTurnAnchor = false;
   }
@@ -115,7 +98,7 @@ function layoutLatestTurn() {
 }
 function updateMessageScroll() {
   const content = $('content');
-  const visible = currentView === 'chat' && !settingsOpen && !state?.compact;
+  const visible = currentView === 'chat' && !state?.compact;
   const below = visible && content.scrollHeight - content.scrollTop - content.clientHeight > 4;
   $('jump-latest').hidden = !below;
   content.classList.toggle('more-below', !!below);
@@ -168,37 +151,18 @@ function renderMessages(s) {
     messagesKey = key;
   }
 }
-async function settings(value) {
-  settingsOpen = value; if(value)$('view-nav').hidden=true; if(!value && !state?.compact) act('view',currentView);document.body.classList.toggle('settings-view',value); $('settings').hidden = !value; $('content').hidden = value;
-  hideScreenPreview(); updateMessageScroll();
-  if (value) { fillSettings(); await act('compact', false);await act('view','settings'); const result = await act('sources'); if (result.ok) setOptions($('microphone'), [['', 'System default microphone'], ...result.value.microphones.map(d => [d.id, d.name])], state.microphone); }
-}
-$('compact-toggle').onclick = () => { settings(false); act('compact', !state.compact); };
-for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => { settings(false); showView(button.dataset.view); };
+$('compact-toggle').onclick = () => act('compact', !state.compact);
 $('more-toggle').onclick=()=>act('more');
 $('mode-toggle').onclick=()=>act('choose-mode');
-$('view-back').onclick=()=>{settings(false);showView('chat');};
+$('view-back').onclick=()=>showView('chat');
 $('model-toggle').onclick = () => act('choose-model');
 $('provider-toggle').onclick = () => act('choose-provider');
-$('provider').onchange = () => act('provider',$('provider').value);
-$('claude-setup').onclick = () => act('claude-setup');
-$('claude-login').onclick = () => act('claude-login');
 $('privacy-toggle').onclick = () => act('toggle-privacy');
-$('settings-close').onclick = () => {settings(false);showView('chat');};
 $('ask-form').onsubmit = event => {event.preventDefault();return submit('assist');};
 $('question').onpointerdown=()=>{if(state?.preferences?.contentProtection && state?.preferences?.noFocusWhenPrivate)act('type-question');};
 $('question').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('ask-form').requestSubmit(); } };
-for (const id of ['image', 'stop', 'dismiss-error', 'minimize', 'hide', 'export', 'permissions', 'microphone-permission']) $(id).onclick = () => act(id);
+for (const id of ['image', 'stop', 'dismiss-error']) $(id).onclick = () => act(id);
 $('listen').onclick = () => act('listen');
-$('reconnect').onclick = () => act('connect');
-$('refresh-apps').onclick = async () => {
-  $('refresh-apps').disabled = true;
-  const result = await act('applications');
-  if (result.ok) setOptions($('audio-source'), [['', 'All applications'], ...result.value.applications.sort((a, b) => a.name.localeCompare(b.name)).map(a => [String(a.pid), a.name])], state.audioPid);
-  $('refresh-apps').disabled = false;
-};
-for (const id of ['model', 'effort', 'microphone', 'audio-source']) $(id).onchange = () => act('settings', { model: $('model').value, effort: $('effort').value, microphone: $('microphone').value, audioPid: $('audio-source').value });
-$('history-list').onclick = async event => { const row = event.target.closest('[data-session]'); if (row) { const r = await act('session', row.dataset.session); if (r.ok) showView('chat'); } };
 $('messages').onclick = async event => {
   if(event.target.closest('[data-retry]')) {await act('retry');return;}
   const screen = event.target.closest('[data-screen]');
@@ -234,51 +198,23 @@ for (const button of document.querySelectorAll('[data-prompt]')) button.onclick 
 async function submit(kind='assist',extra={}) {
   if(state?.busy || state?.requesting) return;
   const text=['assist','screen','screen-transcript'].includes(kind)?$('question').value.trim():'';
-  settings(false);showView('chat');
+  showView('chat');
   const result=await act('ask',{kind,text,...extra});
   if(result.ok && ['assist','screen','screen-transcript'].includes(kind) && $('question').value.trim()===text) { $('question').value='';saveDraft(); }
 }
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>submit(button.dataset.action);
 $('screen').onclick=()=>act('screen');
 $('attachment').onclick=event=>{const button=event.target.closest('[data-remove-image]');if(button)act('remove-image',button.dataset.removeImage);};
-$('manual-screen').onclick=()=>act('screen');
 $('end-session').onclick=()=>act('end-session');
-$('history-search').oninput=()=>render(state);
-$('rename-session').onclick=()=>act('rename-session',$('session-title').value);
 $('copy-transcript').onclick=()=>navigator.clipboard.writeText(state.session.transcript.map(t=>`${t.source}: ${t.text}`).join('\n'));
 $('transcript-lines').onclick=event=>{const line=event.target.closest('[data-transcript]');if(line)submit('latest',{text:'Answer or explain the selected transcript entry.',transcriptIndex:Number(line.dataset.transcript)});};
 function formatDuration(ms){const seconds=Math.max(0,Math.floor(ms/1000));return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
-function renderModes(s){
-  if(!s.modes)return;
-  setOptions($('mode-select'),s.modes.map(m=>[m.id,m.name]),s.modeId);
-  const m=s.modes.find(m=>m.id===s.modeId)||s.modes[0];
-  if(modeEditorId!==m.id){$('mode-name').value=m.name;$('mode-instructions').value=m.instructions;$('mode-context').value=m.context;$('mode-notes-template').value=m.notesTemplate;modeEditorId=m.id;}
-  $('context-files').innerHTML=(m.files||[]).map(f=>`<div class="file-row"><span>${escape(f.name)}<small>${f.text.length.toLocaleString()} characters</small></span><button data-remove-file="${f.id}">Remove</button></div>`).join('');
-}
-$('mode-select').onchange=()=>act('mode',$('mode-select').value);
-$('new-mode').onclick=()=>act('new-mode');
-$('save-mode').onclick=async()=>{await act('save-mode',{id:state.modeId,name:$('mode-name').value,instructions:$('mode-instructions').value,context:$('mode-context').value,notesTemplate:$('mode-notes-template').value});};
-$('import-context').onclick=()=>act('import-context');
-$('context-files').onclick=event=>{const b=event.target.closest('[data-remove-file]');if(b)act('remove-context',b.dataset.removeFile);};
-function renderNotes(s){$('notes-content').innerHTML=s.session.notes?markdown(s.session.notes):'<p class="hint">Generate notes from your transcript, or end the session to create them automatically.</p>';if(document.activeElement!==$('session-title'))$('session-title').value=s.session.title;}
+function renderNotes(s){$('notes-content').innerHTML=s.session.notes?markdown(s.session.notes):'<p class="hint">Generate notes from your transcript, or end the session to create them automatically.</p>';}
 $('copy-notes').onclick=()=>navigator.clipboard.writeText(state.session.notes||'');
 $('edit-notes').onclick=()=>{$('notes-editor').hidden=false;$('notes-text').value=state.session.notes||'';};
 $('save-notes').onclick=async()=>{await act('save-notes',$('notes-text').value);$('notes-editor').hidden=true;};
-function renderPrivacyStatus(){const p=state.privacyStatus;$('privacy-status').textContent=p?`Capture exclusion requested: ${p.contentProtection?'yes':'no'} · Dock: ${p.dockVisible?'visible':'hidden'} · Mission Control: ${p.hiddenInMissionControl?'hidden':'visible'} · Keyboard: ${p.keyboardFocus?'enabled':'shortcuts only'}`:'';}
-function fillSettings(){
-  renderPrivacyStatus();
-  const p=state.preferences||{};
-  for(const [id,key] of Object.entries({'screen-use':'screenUse','smart':'smart','auto-notes':'autoNotes','content-protection':'contentProtection','no-focus':'noFocusWhenPrivate','request-details':'showRequestDetails'}))$(id).checked=!!p[key];
-  $('language').value=p.language||'Auto';$('base-instructions').value=p.baseInstructions||'';
-  $('permission-status').textContent=`Microphone: ${state.permissions?.microphone||'unknown'} · Screen: ${state.permissions?.screen||'unknown'}`;
-  $('shortcut-fields').innerHTML=Object.entries(p.shortcuts||{}).map(([key,value])=>`<label>${escape(key)}<input data-shortcut="${key}" value="${escape(value)}"></label>`).join('');
-}
-for(const [id,key] of Object.entries({'screen-use':'screenUse','smart':'smart','auto-notes':'autoNotes','content-protection':'contentProtection','no-focus':'noFocusWhenPrivate','request-details':'showRequestDetails'}))$(id).onchange=()=>act('preferences',{[key]:$(id).checked});
-$('language').onchange=()=>act('preferences',{language:$('language').value});
-$('save-base').onclick=()=>act('preferences',{baseInstructions:$('base-instructions').value});
-$('save-shortcuts').onclick=()=>act('preferences',{shortcuts:Object.fromEntries([...document.querySelectorAll('[data-shortcut]')].map(el=>[el.dataset.shortcut,el.value.trim()]))});
-window.companion.onCommand?.(command=>{if(command==='focus-question'){$('question').focus();return;}if(command==='screen'){act('screen');return;}if(['assist','latest','screen-transcript'].includes(command))submit(command==='assist'?'latest':command);});
-window.companion.onNavigate?.(async view=>{if(view==='settings'){await settings(true);return;}settings(false);if(view!=='new')await act('compact',false);showView(view==='new'?'chat':view);});
+window.companion.onCommand?.(command=>{if(command==='focus-question'){$('question').focus();return;}if(command==='screen'){act('screen');return;}if(['assist','latest','screen-transcript'].includes(command))submit(command);});
+window.companion.onNavigate?.(async view=>{if(view!=='new')await act('compact',false);showView(view==='new'?'chat':view);});
 window.companion.onScroll?.(delta=>$('content').scrollBy({top:delta,behavior:'smooth'}));
 window.companion.onState(render);
 if(typeof ResizeObserver === 'function') {

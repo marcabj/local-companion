@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { parseHTML } = require('linkedom');
 
-test('provider controls route through app actions and remain available when the backend is disconnected',async()=>{
+test('panel provider control routes through app actions and remains available when the backend is disconnected',async()=>{
  const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));const actions=[];
  window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onState(){},onLevel(){},snapshot:async()=>({})};
  const context=vm.createContext({window,document,console,setTimeout,clearTimeout,marked:{parse:s=>s},DOMPurify:{sanitize:s=>s}});
@@ -15,13 +15,8 @@ test('provider controls route through app actions and remain available when the 
  assert.equal(document.getElementById('provider-label').textContent,'Claude');
  assert.equal(document.getElementById('provider-toggle').disabled,false);
  assert.equal(document.getElementById('model-toggle').disabled,true);
- assert.equal(document.getElementById('reconnect').textContent,'Reconnect Claude');
- assert.equal(document.getElementById('claude-login').hidden,false);
  await document.getElementById('provider-toggle').onclick();assert.equal(actions.at(-1).name,'choose-provider');
- // LinkeDOM does not implement the browser's select.value setter.
- Object.defineProperty(document.getElementById('provider'),'value',{configurable:true,value:'codex'});await document.getElementById('provider').onchange();
- assert.equal(actions.at(-1).name,'provider');assert.equal(actions.at(-1).value,'codex');
- await document.getElementById('claude-login').onclick();assert.equal(actions.at(-1).name,'claude-login');
+ assert.equal(document.getElementById('settings'),null,'settings live in the Dashboard, not the panel');
 });
 
 test('Listen starts background capture without opening a different view', async () => {
@@ -121,6 +116,23 @@ test('new turns anchor at the question; streaming and completion preserve the re
  assert.equal(document.getElementById('jump-latest').hidden,true);
 });
 
+test('a long question scrolls to its last lines so the answer starts in view',()=>{
+ const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));
+ window.companion={action:async()=>({ok:true}),onState(){},onLevel(){},snapshot:async()=>({})};
+ const frames=[];const context=vm.createContext({window,document,console,setTimeout,clearTimeout,requestAnimationFrame:fn=>frames.push(fn),marked:{parse:s=>s},DOMPurify:{sanitize:s=>s}});
+ const content=document.getElementById('content');content.scrollHeight=3000;content.clientHeight=400;content.scrollTop=0;
+ window.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this===content)return {top:0};
+  return {top:(this.classList.contains('assistant')?806+this.previousElementSibling.offsetHeight:806)-content.scrollTop};
+ };
+ vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
+ vm.runInContext("state={compact:false}; fixture={session:{id:'long',messages:[{role:'user',text:'Me: a long transcript'},{role:'assistant',text:'',state:'working'}]},preferences:{}};renderMessages(fixture)",context);
+ Object.defineProperty(document.querySelector('.message.user'),'offsetHeight',{value:900});
+ content.scrollTop=0;vm.runInContext('followLatestMessage()',context);
+ assert.equal(content.scrollTop,806+900-6-100,'the last 100px of the question stay above the answer');
+ assert.equal(document.querySelector('.message.assistant').style.minHeight,'282px');
+});
+
 test('screen context is a hover preview on the answer and survives streaming updates',()=>{
  const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));
  window.companion={action:async()=>({ok:true}),onState(){},onLevel(){},snapshot:async()=>({})};
@@ -162,4 +174,16 @@ test('typing persists the composer draft',async()=>{
  const context=vm.createContext({window,document,console,setTimeout,clearTimeout});vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
  const field=document.getElementById('question');field.value='unfinished message';field.dispatchEvent(new window.Event('input',{bubbles:true}));
  assert.equal(drafts.at(-1),'unfinished message');
+});
+
+test('Send keyboard command uses the same composer action for image-only and typed messages',async()=>{
+ const {window,document}=parseHTML(fs.readFileSync(require.resolve('../src/index.html'),'utf8'));const actions=[];let command;
+ window.companion={action:async(name,value)=>{actions.push({name,value});return {ok:true}},onCommand:fn=>command=fn,onState(){},onLevel(){},snapshot:async()=>({})};
+ const context=vm.createContext({window,document,console,setTimeout,clearTimeout});vm.runInContext(fs.readFileSync(require.resolve('../src/renderer.js'),'utf8'),context);
+ vm.runInContext('state={busy:false,requesting:false,compact:true}',context);
+ for(const text of ['', 'Explain these images']) {
+   document.getElementById('question').value=text;command('assist');await new Promise(resolve=>setImmediate(resolve));
+   const request=actions.filter(a=>a.name==='ask').at(-1).value;
+   assert.equal(request.kind,'assist');assert.equal(request.text,text);assert.equal(document.getElementById('question').value,'');
+ }
 });

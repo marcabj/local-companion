@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreAudio
 import AppKit
+import Carbon
 
 let outputLock = NSLock()
 
@@ -243,6 +244,45 @@ enum AudioProcesses {
     }
 }
 
+final class MovementShortcuts {
+    struct Binding: Decodable { let direction: String; let key: UInt32; let modifiers: UInt32 }
+    var directions: [UInt32: String] = [:]
+    var hotKeys: [EventHotKeyRef] = []
+    static func run(_ json: String) throws {
+        let bindings = try JSONDecoder().decode([Binding].self, from: Data(json.utf8))
+        let application = NSApplication.shared
+        application.setActivationPolicy(.prohibited)
+        let monitor = MovementShortcuts()
+        var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                      EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
+        let installed = InstallEventHandler(GetEventDispatcherTarget(), { _, event, context in
+            guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            let monitor = Unmanaged<MovementShortcuts>.fromOpaque(context).takeUnretainedValue()
+            var id = EventHotKeyID()
+            guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                                    MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr,
+                  let direction = monitor.directions[id.id] else { return OSStatus(eventNotHandledErr) }
+            emit(["type": GetEventKind(event) == UInt32(kEventHotKeyPressed) ? "press" : "release", "direction": direction])
+            return noErr
+        }, events.count, &events, Unmanaged.passUnretained(monitor).toOpaque(), nil)
+        guard installed == noErr else { throw AudioError.message("Could not listen for movement shortcuts (\(installed)).") }
+        for (index, binding) in bindings.enumerated() {
+            guard (123...126).contains(binding.key), ["Up","Down","Left","Right"].contains(binding.direction) else { continue }
+            let id = UInt32(index + 1)
+            var hotKey: EventHotKeyRef?
+            let result = RegisterEventHotKey(binding.key, binding.modifiers, EventHotKeyID(signature: 0x4c434d56, id: id), GetEventDispatcherTarget(), 0, &hotKey)
+            guard result == noErr, let hotKey else { throw AudioError.message("Movement shortcut for \(binding.direction) is unavailable. Choose another combination.") }
+            monitor.hotKeys.append(hotKey); monitor.directions[id] = binding.direction
+        }
+        DispatchQueue.global().async {
+            while readLine() != nil {}
+            exit(0)
+        }
+        emit(["type": "ready"])
+        withExtendedLifetime(monitor) { application.run() }
+    }
+}
+
 @main struct Entry {
     static func value(_ name: String) -> String {
         let args = CommandLine.arguments
@@ -251,6 +291,9 @@ enum AudioProcesses {
     }
     static func main() async {
         do {
+            if CommandLine.arguments.contains("--move-shortcuts") {
+                try MovementShortcuts.run(value("--move-shortcuts")); return
+            }
             if CommandLine.arguments.contains("--test-wav") {
                 let file = try AVAudioFile(forReading: URL(fileURLWithPath: value("--test-wav")))
                 let directory = value("--output")

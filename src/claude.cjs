@@ -14,12 +14,21 @@ function findClaude() {
     .filter(Boolean).find(p => fs.existsSync(p)) || 'claude';
 }
 
-// CLI aliases follow Anthropic's defaults without pinning a model version.
-const models = ['sonnet', 'opus', 'haiku'].map(model => ({
-  model, displayName: `Claude ${model[0].toUpperCase() + model.slice(1)}`, isDefault: model === 'sonnet',
-  inputModalities: ['text', 'image'], defaultReasoningEffort: 'low',
-  supportedReasoningEfforts: model === 'haiku' ? [] : ['low', 'medium', 'high'].map(reasoningEffort => ({ reasoningEffort })),
+const efforts = ['low', 'medium', 'high', 'xhigh', 'max'].map(reasoningEffort => ({ reasoningEffort }));
+// Claude Code's Fast mode is Opus-only and billed as extra usage on subscriptions.
+const fast = [{ id: 'fast', name: 'Fast', description: 'extra usage' }];
+
+// CLI aliases follow Anthropic's latest models without pinning a version; the
+// version shown is updated from the model the CLI reports for each answer.
+const models = [['fable', 'Fable 5.1'], ['opus', 'Opus 5.5'], ['sonnet', 'Sonnet 5.5'], ['haiku', 'Haiku 5.5']].map(([model, displayName]) => ({
+  model, displayName, isDefault: model === 'sonnet', inputModalities: ['text', 'image'],
+  defaultReasoningEffort: 'low', supportedReasoningEfforts: efforts, serviceTiers: model === 'opus' ? fast : [],
 }));
+function versionName(id = '') {
+  const [, family, major, minor] = id.match(/^claude-([a-z]+)-(\d+)-(\d+)/) || [];
+  return family && `${family[0].toUpperCase()}${family.slice(1)} ${major}.${minor}`;
+}
+const fastUnavailable = reason => `Fast mode is unavailable${reason === 'extra_usage_disabled' ? ': turn on extra usage for your Claude account' : reason ? ` (${reason.replaceAll('_', ' ')})` : ''}. This answer used standard speed.`;
 
 const SIGN_IN = 'Open Settings → Sign in to Claude, finish the login in Terminal, then reconnect Claude.';
 const signInError = message => /not logged in|please run \/login|authentication_error|invalid api key|oauth token/i.test(message) ? SIGN_IN : message;
@@ -50,7 +59,7 @@ class ClaudeClient extends EventEmitter {
       throw error;
     }
   }
-  async ask({ threadId, text = '', images = [], model = 'sonnet', effort = 'low', smart = false, instructions = BASE_INSTRUCTIONS }) {
+  async ask({ threadId, text = '', images = [], model = 'sonnet', effort = 'low', serviceTier = 'default', smart = false, instructions = BASE_INSTRUCTIONS }) {
     if (this.busy) throw new Error('Wait for the current answer or stop it first.');
     if (!this.connected) throw new Error('Connect to Claude first.');
     this.busy = true;
@@ -79,7 +88,7 @@ class ClaudeClient extends EventEmitter {
         '--model', model, '--system-prompt', instructions, '--system-prompt-snapshot', 'off',
         '--tools', tools, '--permission-mode', 'dontAsk', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
         ...(smart ? ['--allowedTools', tools] : []),
-        ...(model !== 'haiku' ? ['--effort', effort] : []),
+        '--effort', effort, '--settings', JSON.stringify({ fastMode: serviceTier === 'fast' }),
         ...(threadId ? ['--resume', threadId] : ['--session-id', run.sessionId])];
       const child = run.child = spawn(this.command, args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
       this.children.add(child);
@@ -99,6 +108,11 @@ class ClaudeClient extends EventEmitter {
           if ((block || run.separate) && run.text && !/\s$/.test(run.text)) delta = '\n\n' + delta;
           run.separate = false; run.text += delta; this.emit('delta', delta);
         };
+        if (message.type === 'system' && message.subtype === 'init') {
+          const entry = models.find(m => m.model === model), name = versionName(message.model);
+          if (entry && name) entry.displayName = name;
+          if (serviceTier === 'fast' && message.fast_mode_state !== 'on') this.emit('notice', fastUnavailable(message.fast_mode_disabled_reason));
+        }
         const event = message.type === 'stream_event' && message.event;
         if (event?.type === 'message_start') run.message = event.message?.id ?? null;
         if (event?.type === 'content_block_start' && event.content_block?.type === 'text') run.separate = true;

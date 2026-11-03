@@ -60,10 +60,10 @@ test('latest question requires transcript rather than guessing from screen or re
 });
 
 
-test('global answer shortcut directly requests latest transcript without screenshot',async()=>{
+test('global Send shortcut dispatches the composer without taking a screenshot',async()=>{
  const h=harness();h.run("active().transcript=[{source:'Computer',text:'What is two plus two?',at:1}];registerShortcuts(DEFAULT_SHORTCUTS)");
  await h.shortcuts.get('Control+Alt+Return')();
- assert.equal(h.calls.length,1);assert.equal(h.captures(),0);assert.equal(h.run('active().lastPreparedRequest.kind'),'latest');
+ assert.equal(h.calls.length,0);assert.equal(h.captures(),0);assert.ok(h.events.some(e=>e[0]==='command'&&e[1]==='assist'));
 });
 
 test('screenshot after voice continues the same conversation without resending consumed speech',async()=>{
@@ -120,4 +120,47 @@ test('screen-only punctuation shortcut dispatches screen without transcript',asy
  await h.shortcuts.get("Control+Alt+'")();
  assert.deepEqual(h.events.filter(e=>e[0]==='command'),[['command','screen']]);
  assert.equal(h.shortcuts.has('Control+Alt+S'),false);assert.equal(h.shortcuts.has('Control+Alt+A'),false);
+});
+
+test('global Send shortcut submits queued images without text, speech or a fresh capture',async()=>{
+ const h=harness();h.run("active().attachments=[{id:'queued',path:'/queued.png'}];registerShortcuts(DEFAULT_SHORTCUTS)");
+ await h.shortcuts.get('Control+Alt+Return')();
+ // Follow the renderer command through the normal composer send path.
+ for(const [channel,command] of h.events) if(channel==='command'&&command==='assist') await h.run("ask({kind:'assist',text:active().draft||''})");
+ assert.equal(h.calls.length,1,'The Send shortcut must submit an image-only message');
+ assert.deepEqual(Array.from(h.calls[0].images),['/queued.png']);assert.equal(h.captures(),0);
+ assert.equal(h.run('active().attachments.length'),0);
+});
+
+test('Transcribe mode only toggles; Send replaces queued images with their transcription in the current chat',async()=>{
+ const h=harness();h.run("preferences.screenUse=true;listening=true;active().messages=[{role:'user',text:'Old question'},{role:'assistant',text:'Old answer',state:'completed'}];active().threadId='old-thread';registerShortcuts(DEFAULT_SHORTCUTS)");
+ h.audio.flush=async()=>h.run("if(!active().transcript.length)active().transcript.push({source:'Computer',text:'Can you walk me through it?',at:1})");
+ await h.shortcuts.get('Control+Alt+T')();
+ assert.equal(h.run('preferences.transcribeMode'),true);assert.equal(h.captures(),0);assert.equal(h.calls.length,0);
+ h.run("active().attachments=[{id:'a',path:'/a.png'},{id:'b',path:'/b.png'}]");
+ const chatId=h.run('activeId');const transcription='Question 3\n\n```python\ndef f(x):\n    return x\n```';
+ h.codex.ask=async request=>{h.calls.push(request);if(h.calls.length===1)setImmediate(()=>{h.codex.emit('thread','hidden-thread');h.codex.emit('delta',transcription);h.codex.emit('completed',{status:'completed'});});};
+ await h.run("action('ask',{kind:'assist',text:'Use Python'})");
+ assert.equal(h.captures(),0);assert.equal(h.calls.length,2);
+ const [hidden,prompt]=h.calls;
+ assert.equal(hidden.threadId,null);assert.match(hidden.instructions,/Transcribe the text visible/);assert.doesNotMatch(hidden.instructions,/General/);
+ assert.deepEqual(Array.from(hidden.images),['/a.png','/b.png']);assert.equal(hidden.smart,false);assert.doesNotMatch(hidden.text,/Use Python/);
+ assert.equal(prompt.threadId,'old-thread');assert.equal(prompt.images.length,0);assert.match(prompt.instructions,/General/);
+ assert.equal(prompt.text,'Transcript:\nComputer: Can you walk me through it?\n\nScreen transcription:\n'+transcription+'\n\nUse Python');
+ assert.equal(h.run('activeId'),chatId);assert.equal(h.run('active().messages.length'),4);assert.equal(h.run('active().messages[2].text'),'Use Python\n\n'+transcription);
+ assert.equal(h.run('active().attachments.length'),0);assert.equal(h.run('active().threadId'),'old-thread');assert.equal(h.run('active().sentTranscriptKeys.length'),1);
+ assert.equal(h.run('transcription'),null);assert.equal(h.run('requesting'),false);
+ // Sends without queued images are ordinary messages, with no extra transcription request.
+ h.codex.emit('completed',{status:'completed'});await h.run("action('ask',{kind:'assist',text:'Explain the complexity'})");
+ assert.equal(h.calls.length,3);assert.equal(h.calls[2].text,'Explain the complexity');
+ h.codex.emit('completed',{status:'completed'});await h.shortcuts.get('Control+Alt+T')();assert.equal(h.run('preferences.transcribeMode'),false);
+});
+test('stopped or empty transcription keeps the chat and queued images without prompting',async()=>{
+ for(const [turn,delta,error] of [[{status:'interrupted'},'partial',/transcription stopped/],[{status:'completed'},'  ',/No text was found/]]) {
+  const h=harness();h.run("preferences.transcribeMode=true;active().messages=[{role:'user',text:'Old'}];active().attachments=[{id:'queued',path:'/queued.png'}]");const oldId=h.run('activeId');
+  h.codex.ask=async request=>{h.calls.push(request);setImmediate(()=>{h.codex.emit('delta',delta);h.codex.emit('completed',turn);});};
+  await assert.rejects(h.run("action('ask',{kind:'assist'})"),error);
+  assert.equal(h.calls.length,1);assert.equal(h.captures(),0);assert.equal(h.run('activeId'),oldId);assert.equal(h.run('active().attachments.length'),1);
+  assert.equal(h.run('active().messages.length'),1);assert.equal(h.run('busy'),false);assert.equal(h.run('requesting'),false);
+ }
 });

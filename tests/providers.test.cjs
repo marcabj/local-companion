@@ -64,6 +64,24 @@ test('Claude CLI does not inherit a host Claude Code session', async t => {
   await client.connect();
   assert.equal(JSON.parse((await turn(client, { text: 'Hello' })).text).nested, false);
 });
+test('Claude offers every model and effort, shows reported versions and requests Fast only on Opus', async t => {
+  const { client } = await fixture(t); const { models } = await client.connect();
+  assert.deepEqual(models.map(m => m.model), ['fable', 'opus', 'sonnet', 'haiku']);
+  for (const m of models) assert.deepEqual(m.supportedReasoningEfforts.map(e => e.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(models.filter(m => m.serviceTiers.length).map(m => m.model), ['opus']);
+  const reply = JSON.parse((await turn(client, { text: 'Hi', model: 'haiku', effort: 'max' })).text);
+  assert.equal(reply.effort, 'max'); assert.equal(reply.fast, false);
+  assert.equal(models.find(m => m.model === 'haiku').displayName, 'Haiku 9.9');
+  const notices = []; client.on('notice', n => notices.push(n));
+  assert.equal(JSON.parse((await turn(client, { text: 'Hi', model: 'opus', serviceTier: 'fast' })).text).fast, true);
+  assert.deepEqual(notices, []);
+});
+test('Claude reports when Fast mode is unavailable instead of silently answering slower', async t => {
+  const { client } = await fixture(t, { ...process.env, CLAUDE_FIXTURE_FAST_OFF: '1' }); await client.connect();
+  const notices = []; client.on('notice', n => notices.push(n));
+  const { result } = await turn(client, { text: 'Hi', model: 'opus', serviceTier: 'fast' });
+  assert.equal(result.status, 'completed'); assert.equal(notices.length, 1); assert.match(notices[0], /extra usage.*standard speed/);
+});
 test('Claude Stop terminates a running answer and permits the next request', async t => {
   const { client } = await fixture(t); await client.connect();
   const initialized = once(client, 'thread'); const completion = once(client, 'completed');
