@@ -144,3 +144,12 @@ test('Untick all clears every ticked context item',async()=>{
  const h=harness();h.run("contextItems=[{id:'a',text:'x',enabled:true},{id:'b',text:'y',enabled:true}]");
  await h.run("action('untick-all-context')");assert.equal(h.run('enabledContext().length'),0);
 });
+
+test('Speech to text choice is shown with its privacy note and saved as a preference',()=>{
+ const d=dashboard();const s=d.fixture();const select=d.document.getElementById('speech-to-text');
+ d.render(s);assert.match(d.document.getElementById('speech-to-text-help').textContent,/never leaves/);
+ s.preferences.speechToText='codex';d.render(s);
+ assert.match(d.document.getElementById('speech-to-text-help').textContent,/Sends each speech segment to OpenAI.*local Parakeet/);
+ choose(select,'parakeet');select.onchange();
+ assert.deepEqual(last(d),{name:'preferences',value:{speechToText:'parakeet'}});
+});

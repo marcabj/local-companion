@@ -5,10 +5,15 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 class AudioPipeline extends EventEmitter {
-  constructor({ helper, python, worker, directory, startupTimeout = 15000, idleTimeoutMs = 45 * 60 * 1000 }) {
-    super(); Object.assign(this, { helper, python, worker, directory, startupTimeout, idleTimeoutMs });
+  constructor({ helper, python, worker, directory, dictation = null, engine = 'parakeet', startupTimeout = 15000, idleTimeoutMs = 45 * 60 * 1000 }) {
+    super(); Object.assign(this, { helper, python, worker, directory, dictation, engine, startupTimeout, idleTimeoutMs });
     this.inFlight = new Set(); this.jobs = new Set(); this.flushWaiters = new Map(); this.pending = new Map(); this.sequence = 0; this.listening = false;
   }
+  // Codex dictation is used until a request fails; the rest of that Listen session then uses local Parakeet.
+  usesCodex() { return this.engine === 'codex' && !!this.dictation && !this.fallback; }
+  engineLabel() { return this.usesCodex() ? 'Codex dictation' : 'local Parakeet'; }
+  setEngine(engine) { this.engine = engine; this.fallback = false; }
+  fallBack(error) { this.fallback = true; this.emit('status', `Codex dictation failed (${error.message}) · using local Parakeet`); }
   cancelIdleUnload() { clearTimeout(this.idleTimer); this.idleTimer = null; }
   scheduleIdleUnload() {
     this.cancelIdleUnload();
@@ -61,6 +66,14 @@ class AudioPipeline extends EventEmitter {
     return this.loading;
   }
   async transcribe(file, source) {
+    if (this.usesCodex()) {
+      if (this.pending.size >= 8) throw new Error('Transcription cannot keep up. Stop and restart listening.');
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve() {}, reject() {}, timer: null }); this.emit('pending');
+      try { return await this.dictation.transcribe(file, source); }
+      catch (e) { this.fallBack(e); }
+      finally { this.pending.delete(id); this.emit('pending'); }
+    }
     await this.prepare();
     if (this.pending.size >= 8) throw new Error('Transcription cannot keep up. Stop and restart listening.');
     const id = ++this.sequence;
@@ -75,9 +88,11 @@ class AudioPipeline extends EventEmitter {
   async start({ microphone = '', pid = '', sessionId } = {}) {
     this.lastError = null;
     if (this.capture || this.starting) throw new Error('Audio capture is already starting or running.');
-    this.starting = true; this.cancelIdleUnload();
+    this.starting = true; this.cancelIdleUnload(); this.fallback = false;
     try {
-      await this.prepare();
+      // Check the Codex sign-in before capture so a missing login falls back to Parakeet up front.
+      if (this.usesCodex()) await this.dictation.credentials().catch(e => this.fallBack(e));
+      if (!this.usesCodex()) await this.prepare();
       this.emit('status', 'Starting microphone and computer audio…');
       await fs.mkdir(this.directory, { recursive: true });
       const args = ['--listen', this.directory, '--microphone', microphone, '--pid', String(pid)];
@@ -101,7 +116,7 @@ class AudioPipeline extends EventEmitter {
       });
       createInterface({ input: child.stdout }).on('line', async line => {
         let m; try { m = JSON.parse(line); } catch { return; }
-        if (m.type === 'status') this.emit('status', m.message);
+        if (m.type === 'status') this.emit('status', m.message.replace('local Parakeet', this.engineLabel()));
         if (m.type === 'started') { ready = true; clearTimeout(timer); this.listening = true; this.emit('listening', true); completeStart(); }
         if (m.type === 'level') this.emit('level', m);
         if (m.type === 'error') { this.lastError=m.message; clearTimeout(timer); if (!ready) failStart(new Error(m.message)); else this.emit('problem', m.message); void this.stop(); }

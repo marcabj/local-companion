@@ -46,8 +46,8 @@ function render(s) {
   $('listen').querySelector('span').textContent = listenLabel;
   $('listen').setAttribute('aria-label', listenLabel); $('listen').title = listenLabel;
   $('meters').hidden = !s.listening;
-  $('transcript-empty-title').textContent = s.audioBusy ? 'Preparing local transcription…' : s.listening ? 'Listening…' : 'Ready to listen';
-  $('transcript-empty-hint').textContent = s.audioBusy ? 'Loading Parakeet and opening your audio inputs.' : 'Play a video or speak. Words appear here after a short pause.';
+  $('transcript-empty-title').textContent = s.audioBusy ? (s.preferences?.speechToText === 'codex' ? 'Preparing Codex dictation…' : 'Preparing local transcription…') : s.listening ? 'Listening…' : 'Ready to listen';
+  $('transcript-empty-hint').textContent = s.audioBusy ? (s.preferences?.speechToText === 'codex' ? 'Connecting to Codex dictation and opening your audio inputs.' : 'Loading Parakeet and opening your audio inputs.') : 'Play a video or speak. Words appear here after a short pause.';
   updateCaptureStatus();
   renderAttachments(s.attachments || []);
   $('transcript-count').textContent = s.session.transcript.length || '';

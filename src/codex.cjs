@@ -135,4 +135,4 @@ class CodexClient extends EventEmitter {
   }
   disconnect() { if (this.rpc) this.rpc.close(); this.rpc = null; this.thread = null; this.turn = null; this.busy = false; }
 }
-module.exports = { RpcProcess, CodexClient };
+module.exports = { RpcProcess, CodexClient, findCodex };

@@ -13,7 +13,7 @@ async function main() {
   const paths = await packager({ dir: project, name: 'Local Companion', appBundleId: 'local.marc.companion', platform: 'darwin', arch: 'arm64', out: '.build/package', overwrite: true, asar: false, prune: true,
     ignore: [/^\/\.analysis/, /^\/\.build/, /^\/\.venv/, /^\/\.git/, /^\/tests/, /^\/native/],
     extraResource: ['.build/CompanionCapture'],
-    extendInfo: { NSMicrophoneUsageDescription: 'Transcribe your microphone locally with Parakeet when you start listening.', NSScreenCaptureUsageDescription: 'Attach a screenshot when you request screen context.', NSAudioCaptureUsageDescription: 'Transcribe computer audio locally when you start listening.', LSMinimumSystemVersion: '15.0' }
+    extendInfo: { NSMicrophoneUsageDescription: 'Transcribe your microphone when you start listening, with local Parakeet or Codex dictation as chosen in Settings.', NSScreenCaptureUsageDescription: 'Attach a screenshot when you request screen context.', NSAudioCaptureUsageDescription: 'Transcribe computer audio when you start listening, with local Parakeet or Codex dictation as chosen in Settings.', LSMinimumSystemVersion: '15.0' }
   });
   const packaged = path.join(paths[0], 'Local Companion.app');
   signBundle(path.join(packaged, 'Contents/Resources/CompanionCapture'));

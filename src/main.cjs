@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Menu, Tray, desktopCapturer, screen, dialog, nativeImage, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Menu, Tray, desktopCapturer, screen, dialog, nativeImage, shell, systemPreferences, net } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { ProviderClient, PROVIDERS, providerName, routeState, routeRequest } = require('./providers.cjs');
 const { findClaude } = require('./claude.cjs');
 const { AudioPipeline } = require('./audio.cjs');
+const { CodexDictation } = require('./dictation.cjs');
 const { BASE_INSTRUCTIONS, LEGACY_BASE_INSTRUCTIONS, TRANSCRIBE_INSTRUCTIONS, ACTIONS, defaultModes, upgradeModes, buildRequest } = require('./prompts.cjs');
 const { WindowPrivacy } = require('./privacy.cjs');
 const { InputDiagnostics } = require('./input-diagnostics.cjs');
@@ -35,10 +36,11 @@ let selectedServiceTier = 'default';
 let selectedModel = '', selectedEffort = 'low', capturing = false, problem = '';
 let microphone = '', audioPid = '';
 let audioStatus = 'Local Parakeet';
+const idleAudioStatus = (p = preferences) => p.speechToText==='codex' ? 'Codex dictation' : 'Local Parakeet';
 let saveTimer, renderTimer, transcription = null;
 let compact = true, quitting = false, requesting = false, captureStartedAt = null;
 const DEFAULT_SHORTCUTS = {focus:'Control+Alt+P',assist:'Control+Alt+Return', visibility:'Control+Alt+Space', listen:'Control+Alt+L', screenshot:"Control+Alt+'",screenTranscript:'Control+Alt+\\', transcribeMode:'Control+Alt+T', new:'Control+Alt+N', moveUp:'Command+Up',moveDown:'Command+Down',moveLeft:'Command+Left',moveRight:'Command+Right',scrollUp:'Control+Alt+Shift+Up',scrollDown:'Control+Alt+Shift+Down'};
-let preferences = {conversationVersion:2,screenUse:false,transcribeMode:false,smart:false,language:'Auto',autoNotes:true,contentProtection:false,noFocusWhenPrivate:false,baseInstructions:BASE_INSTRUCTIONS,shortcuts:{...DEFAULT_SHORTCUTS}};
+let preferences = {conversationVersion:2,speechToText:'parakeet',screenUse:false,transcribeMode:false,smart:false,language:'Auto',autoNotes:true,contentProtection:false,noFocusWhenPrivate:false,baseInstructions:BASE_INSTRUCTIONS,shortcuts:{...DEFAULT_SHORTCUTS}};
 let modes = defaultModes(), modeId = 'general';
 // The user's context library: files and pasted text, sent with each chat only when ticked.
 let contextItems = [];
@@ -282,12 +284,12 @@ function bindEvents() {
   });
   audio.on('status', value => { audioStatus = value; update(); });
   audio.on('pending', update);
-  audio.on('listening', value => { if(value && !captureStartedAt) captureStartedAt=Date.now(); if(!value && captureStartedAt) {const s=active();s.listenedMs=(s.listenedMs||0)+Date.now()-captureStartedAt;captureStartedAt=null;save();} listening = value; audioBusy = false; audioStatus = value ? 'Listening · local Parakeet' : 'Local Parakeet'; update(); });
+  audio.on('listening', value => { if(value && !captureStartedAt) captureStartedAt=Date.now(); if(!value && captureStartedAt) {const s=active();s.listenedMs=(s.listenedMs||0)+Date.now()-captureStartedAt;captureStartedAt=null;save();} listening = value; audioBusy = false; audioStatus = value ? `Listening · ${audio.engineLabel()}` : idleAudioStatus(); update(); });
   audio.on('level', value => win?.webContents.send('level', value));
   audio.on('problem', value => { audioBusy = false; report(value); });
   audio.on('transcript', item => {
     const s = sessions.find(s => s.id === item.sessionId);
-    if (s) { s.transcript.push({ id:randomUUID(), source: item.source, text: item.text, at: item.at, seconds: item.seconds }); s.transcript.sort((a, b) => a.at - b.at); save(); update(); }
+    if (s) { s.transcript.push({ id:randomUUID(), source: item.source, text: item.text, at: item.at, seconds: item.seconds, engine: item.engine || 'parakeet' }); s.transcript.sort((a, b) => a.at - b.at); save(); update(); }
   });
 }
 async function action(name, payload) {
@@ -395,11 +397,13 @@ async function action(name, payload) {
       const next={...preferences};
       for(const k of ['screenUse','transcribeMode','smart','autoNotes','contentProtection','noFocusWhenPrivate','showRequestDetails']) if(typeof payload[k]==='boolean') next[k]=payload[k];
       if(typeof payload.language==='string') next.language=payload.language.slice(0,60);
+      if(['parakeet','codex'].includes(payload.speechToText)) next.speechToText=payload.speechToText;
       if(typeof payload.baseInstructions==='string') next.baseInstructions=payload.baseInstructions.trim() || BASE_INSTRUCTIONS;
       if(payload.shortcuts) {
         next.shortcuts={...DEFAULT_SHORTCUTS,...payload.shortcuts};
         try { await registerShortcuts(next.shortcuts); } catch(e) {try{await registerShortcuts(preferences.shortcuts);}catch{} throw e;}
       }
+      if(next.speechToText!==preferences.speechToText) {audio.setEngine(next.speechToText);if(!listening && !audioBusy)audioStatus=idleAudioStatus(next);}
       preferences=next;applyPrivacy();updateTray();save();update();break;
     }
     case 'mode': {
@@ -503,7 +507,7 @@ async function action(name, payload) {
             audioStatus = 'Waiting for microphone permission…'; update();
             if (permission !== 'not-determined' || !await systemPreferences.askForMediaAccess('microphone')) throw new Error('Allow Local Companion in System Settings → Privacy & Security → Microphone, then reopen the app.');
           }
-          audioStatus = 'Loading Parakeet…';
+          audioStatus = audio.usesCodex() ? 'Connecting to Codex dictation…' : 'Loading Parakeet…';
           await audio.start({ microphone, pid: audioPid, sessionId: activeId });
         }
       } finally { audioBusy = false; update(); }
@@ -573,7 +577,9 @@ else {
     } catch (e) { if (e.code !== 'ENOENT') problem = 'Could not load saved history. The existing file has been left in place.'; }
     if (!sessions.length) newSession(); else {activeId = sessions[0].id;modeId=active().modeId || modeId;}
     codex = new ProviderClient(path.join(dataDir, 'workspace'));
-    audio = new AudioPipeline({ helper: captureBinary, python: path.join(project, '.venv/bin/python'), worker: path.join(root, 'scripts/transcribe.py'), directory: path.join(dataDir, 'audio-temp') });
+    audio = new AudioPipeline({ helper: captureBinary, python: path.join(project, '.venv/bin/python'), worker: path.join(root, 'scripts/transcribe.py'), directory: path.join(dataDir, 'audio-temp'),
+      dictation: new CodexDictation({ fetch: request => net.fetch(request) }), engine: preferences.speechToText });
+    audioStatus = idleAudioStatus();
     bindEvents();
     compact = active().messages.length === 0;
     win = new BrowserWindow({ show:false, ...(process.platform==='darwin'?{type:'panel'}:{}), acceptFirstMouse:true, fullscreenable:false, hiddenInMissionControl:preferences.contentProtection, skipTaskbar:preferences.contentProtection, width: 690, height: compact ? 104 : 500, minWidth: 690, maxWidth: 690, minHeight: 104, title: 'Local Companion', backgroundColor: '#00000000', transparent: true, frame: false, roundedCorners: true, hasShadow: false, alwaysOnTop: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });

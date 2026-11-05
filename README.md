@@ -1,6 +1,6 @@
 # Local Companion
 
-A floating macOS assistant for screenshots, live audio transcripts and quick answers. Responses run through your signed-in Codex CLI or Claude Code CLI; NVIDIA Parakeet transcribes microphone and computer audio locally on Apple Silicon.
+A floating macOS assistant for screenshots, live audio transcripts and quick answers. Responses run through your signed-in Codex CLI or Claude Code CLI; NVIDIA Parakeet transcribes microphone and computer audio locally on Apple Silicon, or optionally Codex dictation online.
 
 This is a source release of a local prototype. It is inspired by Cluely's interaction design and is independent of Cluely. It includes original mode instructions and no extracted Cluely binaries or assets.
 
@@ -71,6 +71,7 @@ The one-time signing setup creates a personal certificate in a dedicated local k
 Screen shortcuts use physical key positions. On Canadian–CSA, the screen-only and combined keys are **è** and **à**. Shortcuts are editable in **Dashboard → Settings → Keyboard shortcuts** and may conflict with other applications.
 
 - Start **Listen** once. Enter sends your message, queued images and new speech. Control–Option–Enter does the same as Send, including image-only messages, even when another app is focused.
+- **Dashboard → Settings → Audio → Speech to text** chooses **Local Parakeet** (default) or **Codex dictation (online, experimental)**. Codex dictation uploads each speech segment to ChatGPT's undocumented `backend-api/transcribe` endpoint using your Codex CLI sign-in, whichever answer provider you use. It can stop working at any time. If the sign-in check or a request fails, the rest of that Listen session uses Parakeet and the status line says why; the next Listen tries Codex again.
 - Click **Screen** to queue a screenshot without submitting. Capture several views, add any text, then Send. The paperclip accepts multiple image files. Capturing temporarily hides the panel.
 - Choose **… → Quick Assist · screen + voice** or the combined shortcut to capture and send immediately. Automatic screen capture for typed messages is optional and initially off.
 - Click the square **Stop** button in the composer to interrupt thinking or generation. Click **Pause** to stop audio capture separately.
@@ -85,7 +86,7 @@ New chat / Command–N leaves an already fresh chat in place, preserving its dra
 
 ## Data and account usage
 
-Parakeet transcription runs on your Mac. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to the selected answer provider. Switching providers sends earlier messages and images that provider has not yet seen with the next request. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
+Parakeet transcription runs on your Mac. With Codex dictation selected, every microphone and computer-audio segment is uploaded to OpenAI, including room speech the microphone picks up. Asking for an answer sends the composed question and applicable transcript, screenshots, mode instructions and reference text to the selected answer provider. Switching providers sends earlier messages and images that provider has not yet seen with the next request. Mode instructions and references configure the conversation initially and when changed; ordinary messages do not repeat them. Smart research optionally enables web search. Model inference is not local. With ChatGPT sign-in, answers use the account's allowance; an API-key configuration follows its provider's billing.
 
 The app starts its own `codex app-server --listen stdio://` process and uses existing Codex authentication. The Codex desktop app does not need to be open. `COMPANION_CODEX` can point to a specific CLI executable. The companion disables configured development MCP servers for its own threads and enables web search only when Smart research is on. Codex memories, skills, hooks, apps and project documents are also turned off for these threads, so interview chats stay small and never feed Codex memory.
 

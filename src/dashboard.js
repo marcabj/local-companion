@@ -96,6 +96,10 @@ function renderSettings(s, busy) {
   for (const [id, key] of Object.entries(TOGGLES)) { $(id).checked = !!p[key]; $(id).disabled = busy; }
   $('no-focus').disabled = busy || !p.contentProtection;
   $('language').value = p.language || 'Auto'; $('language').disabled = busy;
+  $('speech-to-text').value = p.speechToText || 'parakeet'; $('speech-to-text').disabled = busy;
+  $('speech-to-text-help').textContent = p.speechToText === 'codex'
+    ? 'Sends each speech segment to OpenAI using your Codex sign-in. This endpoint is undocumented and may stop working; if a request fails, the rest of that Listen session uses local Parakeet.'
+    : 'Audio is transcribed on this Mac and never leaves it.';
   const privacy = s.privacyStatus;
   $('privacy-status').textContent = privacy ? `Capture exclusion requested: ${privacy.contentProtection ? 'yes' : 'no'} · Dock: ${privacy.dockVisible ? 'visible' : 'hidden'} · Keyboard: ${privacy.keyboardFocus ? 'enabled' : 'shortcuts only'}` : '';
   $('permission-status').textContent = `Microphone: ${s.permissions?.microphone || 'unknown'} · Screen: ${s.permissions?.screen || 'unknown'}`;
@@ -187,6 +191,7 @@ $('refresh-apps').onclick = async () => {
 };
 for (const [id, key] of Object.entries(TOGGLES)) $(id).onchange = () => act('preferences', { [key]: $(id).checked });
 $('language').onchange = () => act('preferences', { language: $('language').value });
+$('speech-to-text').onchange = () => act('preferences', { speechToText: $('speech-to-text').value });
 $('save-shortcuts').onclick = () => act('preferences', { shortcuts: Object.fromEntries([...document.querySelectorAll('[data-shortcut]')].map(el => [el.dataset.shortcut, el.value.trim()])) });
 $('save-base').onclick = () => act('preferences', { baseInstructions: $('base-instructions').value });
 
